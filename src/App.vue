@@ -23,11 +23,15 @@ import CryptoJS from 'crypto-js';
 interface LockableUploadFile extends UploadFile {
   locked: boolean;
   scale: number;
+  upload_url?: String;
 };
 
 interface AppData {
   canvasHeight: number;
   canvasWidth: number;
+
+  imageURL: String;
+  referenceURL: String;
 
   personName: string;
   hideInvisibleKeypoints: boolean;
@@ -334,6 +338,8 @@ export default defineComponent({
     return {
       canvasHeight: 512,
       canvasWidth: 512,
+      imageURL: '',
+      referenceURL: '',
       personName: '',
       hideInvisibleKeypoints: false,
       people: new Map<number, OpenposePerson>(),
@@ -357,7 +363,7 @@ export default defineComponent({
   mounted() {
     this.$nextTick(() => {
       this.canvas = markRaw(new fabric.Canvas(<HTMLCanvasElement>this.$refs.editorCanvas, {
-        backgroundColor: '#222222',
+        backgroundColor: '#333333',
         preserveObjectStacking: true,
         fireRightClick: true,
         stopContextMenu: true,
@@ -508,8 +514,17 @@ export default defineComponent({
         }, '*');
       }
     });
+    window.addEventListener('keydown', this.handleKeyDown);
+  },
+  beforeUnmount() {
+    window.removeEventListener('keydown', this.handleKeyDown);
   },
   methods: {
+    handleKeyDown(event) {
+      if (event.key === 'g' || event.key === 'G') {
+        this.downloadCanvasAsImage();
+      }
+    },
     getKeypointProxy(keypoint: OpenposeKeypoint2D): UnwrapRef<OpenposeKeypoint2D> {
       return this.keypointMap.get(keypoint.id)!;
     },
@@ -647,10 +662,8 @@ export default defineComponent({
     },
     onLockedChange(file: LockableUploadFile, locked: boolean) {
       file.locked = locked;
-
       const img = this.canvasImageMap.get(file.uid);
       if (!img) return;
-
       if (locked) {
         if (this.canvas?.getActiveObjects().includes(img)) {
           this.canvas.discardActiveObject();
@@ -740,6 +753,16 @@ export default defineComponent({
       // Return false to prevent the default upload behavior
       return false;
     },
+    handleUpdateRef(file: Blob) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        if (e.target && e.target.result) {
+          this.referenceURL = e.target.result as string;
+        }
+      };
+      reader.readAsDataURL(file);
+      return false;
+    },
     loadBackgroundImageFromURL(url: string) {
       fabric.Image.fromURL(url, (img) => {
         img.set({
@@ -747,7 +770,7 @@ export default defineComponent({
           top: this.openposeCanvas.top,
           scaleX: 1.0,
           scaleY: 1.0,
-          opacity: 0.5,
+          opacity: 1.0,
           hasControls: true,
           hasBorders: true,
           lockScalingX: false,
@@ -758,11 +781,11 @@ export default defineComponent({
         // Image should not block skeleton.
         this.canvas?.moveTo(img, 1);
         this.canvas?.renderAll();
-
         const uploadFile = this.uploadedImageList[this.uploadedImageList.length - 1];
-        uploadFile.locked = false;
-        uploadFile.scale = 1.0;
         this.canvasImageMap.set(uploadFile.uid, img);
+
+        uploadFile.locked = true
+        this.onLockedChange(uploadFile, true)
       });
     },
     isImage(file: UploadFile) {
@@ -906,30 +929,30 @@ export default defineComponent({
       this.uploadedImageList.splice(0); // Clear `uploadedImageList`.
       this.resetZoom();
     },
-    loadCanvasFromRequestParams() {
-      this.clearCanvas();
-      const data = window.dataFromServer;
-      if (_.isEmpty(data)) {
-        return;
-      }
+    // loadCanvasFromRequestParams() {
+    //   this.clearCanvas();
+    //   const data = window.dataFromServer;
+    //   if (_.isEmpty(data)) {
+    //     return;
+    //   }
 
-      let poseJson: IOpenposeJson;
-      try {
-        poseJson = JSON.parse(data.pose) as IOpenposeJson;
-      } catch (ex: any) {
-        this.$notify({ title: 'Error', desc: ex.message });
-        return;
-      }
-      this.loadPeopleFromJson(poseJson);
-      this.loadBackgroundImageFromURL(data.image_url);
-    },
+    //   let poseJson: IOpenposeJson;
+    //   try {
+    //     poseJson = JSON.parse(data.pose) as IOpenposeJson;
+    //   } catch (ex: any) {
+    //     this.$notify({ title: 'Error', desc: ex.message });
+    //     return;
+    //   }
+    //   this.loadPeopleFromJson(poseJson);
+    //   this.handleBeforeUploadImage(data.image_url);
+    // },
     async loadCanvasFromFrameMessage(message: IncomingFrameMessage) {
       this.modalId = message.modalId;
 
       this.clearCanvas();
       const openposeJson =
-        message.poseURL?
-          parseDataURLtoJSON(message.poseURL) as IOpenposeJson:
+        message.poseURL ?
+          parseDataURLtoJSON(message.poseURL) as IOpenposeJson :
           Array.isArray(message.poses!) ? message.poses![0] : message.poses!;
 
       this.canvasHeight = openposeJson.canvas_height;
@@ -943,6 +966,7 @@ export default defineComponent({
           scale: 1.0,
           name: 'controlnet input',
           uid: await calculateHash(message.imageURL),
+          upload_url: message.imageURL
         } as LockableUploadFile;
         this.uploadedImageList.push(imageFile);
         this.loadBackgroundImageFromURL(message.imageURL);
@@ -979,40 +1003,84 @@ export default defineComponent({
       link.download = 'pose.json';
       link.click();
     },
-    downloadCanvasAsImage() {
+    async downloadCanvasAsImage() {
+      let temp_img: LockableUploadFile | null = null;
+      this.uploadedImageList.forEach(image => {
+        temp_img = image
+        this.handleRemoveImage(image);
+      });
+      this.uploadedImageList = []
+
       if (!this.canvas) return;
       this.resetZoom();
 
       // Get the data URL of the canvas as a PNG image
       const dataUrl = this.canvas.toDataURL({ format: 'image/png' });
 
-      // Crop the image.
+      // Crop the image
       const newCanvas = new fabric.StaticCanvas(null, {
         width: this.canvasWidth,
         height: this.canvasHeight,
       });
 
-      fabric.Image.fromURL(dataUrl, img => {
-        img.set({
-          left: -this.openposeCanvas.left!,
-          top: -this.openposeCanvas.top!,
+      if (temp_img) {
+        var imageFile = {
+          locked: false,
+          scale: 1.0,
+          name: 'controlnet input',
+          uid: await calculateHash(temp_img.upload_url),
+          upload_url: temp_img.upload_url
+        } as LockableUploadFile;
+        this.uploadedImageList.push(imageFile);
+        this.loadBackgroundImageFromURL(temp_img.upload_url);
+      }
+      if (this.openposeCanvas) {
+        fabric.Image.fromURL(dataUrl, img => {
+
+          img.set({
+            left: -this.openposeCanvas.left,
+            top: -this.openposeCanvas.top,
+          });
+
+          newCanvas.add(img);
+          newCanvas.renderAll();
+
+          const croppedImageUrl = newCanvas.toDataURL({ format: 'image/png' });
+          fetch("http://localhost:7860/api/generate", {
+            method: "POST",
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              data: [this.referenceURL, croppedImageUrl]
+            })
+          }).then(res => res.json())  // Parse the JSON of the response
+            .then(async data => {
+
+              this.uploadedImageList.forEach(image => {
+                this.handleRemoveImage(image);
+              });
+              this.uploadedImageList = []
+
+              let newImageURL = data.data[0].url.toString()
+              console.log(newImageURL)
+              this.imageURL = newImageURL;
+
+              var imageFile = {
+                locked: false,
+                scale: 1.0,
+                name: 'controlnet input',
+                uid: await calculateHash(newImageURL),
+                upload_url: newImageURL
+              } as LockableUploadFile;
+              this.uploadedImageList.push(imageFile);
+              this.loadBackgroundImageFromURL(newImageURL);
+            })
+            .catch(error => {
+              console.error('Error:', error);  // Handle any errors
+            });
         });
-        newCanvas.add(img);
-        newCanvas.renderAll();
-
-        const croppedImageUrl = newCanvas.toDataURL({ format: 'image/png' });
-
-        // Create an img element with the data URL
-        const imgElem = document.createElement('img');
-        imgElem.src = croppedImageUrl;
-
-        // Create a link element with the data URL
-        const link = document.createElement('a');
-        link.href = croppedImageUrl;
-        link.download = 'pose.png';
-        // Trigger a click event on the link to initiate the download
-        link.click();
-      });
+      }
     },
   },
   components: {
@@ -1030,8 +1098,7 @@ export default defineComponent({
 <template>
   <a-row>
     <a-col :span="8" id="control-panel">
-      <Header></Header>
-      <a-button v-if="modalId !== undefined" @click="sendCanvasAsFrameMessage">
+      <!-- <a-button v-if="modalId !== undefined" @click="sendCanvasAsFrameMessage">
         {{ $t('ui.sendPose') }}
       </a-button>
       <a-divider orientation="left" orientation-margin="0px">
@@ -1041,7 +1108,7 @@ export default defineComponent({
         <a-descriptions-item :label="$t('ui.panningKeybinding')">{{ $t('ui.panningDescription') }}</a-descriptions-item>
         <a-descriptions-item :label="$t('ui.zoomKeybinding')">{{ $t('ui.zoomDescription') }}</a-descriptions-item>
         <a-descriptions-item :label="$t('ui.hideKeybinding')">{{ $t('ui.hideDescription') }}</a-descriptions-item>
-      </a-descriptions>
+      </a-descriptions> -->
       <a-divider orientation="left" orientation-margin="0px">
         {{ $t('ui.canvas') }}
       </a-divider>
@@ -1049,13 +1116,25 @@ export default defineComponent({
         <a-space>
           <a-input-number type="inputNumber" addon-before="Width" addon-after="px" v-model:value="canvasWidth" :min="64"
             :max="4096" />
-          <a-input-number type="inputNumber" addon-before="Height" addon-after="px" v-model:value="canvasHeight" :min="64"
-            :max="4096" />
+          <a-input-number type="inputNumber" addon-before="Height" addon-after="px" v-model:value="canvasHeight"
+            :min="64" :max="4096" />
+        </a-space>
+        <a-space>
           <a-button @click="resizeOpenposeCanvas(canvasWidth, canvasHeight)">{{ $t('ui.resizeCanvas') }}</a-button>
           <a-button @click="resetZoom()">{{ $t('ui.resetZoom') }}</a-button>
         </a-space>
       </div>
       <a-divider orientation="left" orientation-margin="0px">
+        Reference Image
+      </a-divider>
+      <a-upload list-type="picture" accept="image/*" :beforeUpload="handleUpdateRef" :show-upload-list="false">
+        <a-button v-if="!referenceURL">
+          <upload-outlined></upload-outlined>
+          Upload Reference
+        </a-button>
+        <a-image v-else :src="referenceURL.toString()" alt="avatar" :width="512" :height="512" />
+      </a-upload>
+      <!-- <a-divider orientation="left" orientation-margin="0px">
         {{ $t('ui.backgroundImage') }}
       </a-divider>
       <a-upload v-model:file-list="uploadedImageList" list-type="picture" accept="image/*"
@@ -1070,12 +1149,13 @@ export default defineComponent({
               @update:locked="onLockedChange(file, $event)" />
             <img v-if="isImage(file)" :src="file.thumbUrl || file.url" :alt="file.name" class="image-thumbnail" />
             <span>{{ file.name }}</span>
-            <a-input-number class="scale-ratio-input" addon-before="scale ratio" @update:value="scaleImage(file, $event)"
-              :min="0" :value="file.scale !== undefined ? file.scale : 1.0" :precision="2" />
+            <a-input-number class="scale-ratio-input" addon-before="scale ratio"
+              @update:value="scaleImage(file, $event)" :min="0" :value="file.scale !== undefined ? file.scale : 1.0"
+              :precision="2" />
             <close-outlined @click="actions.remove" class="close-icon" />
           </a-card>
         </template>
-      </a-upload>
+      </a-upload> -->
       <a-divider orientation="left" orientation-margin="0px">
         {{ $t('ui.poseControl') }}
       </a-divider>
@@ -1084,7 +1164,7 @@ export default defineComponent({
           <plus-square-outlined />
           {{ $t('ui.addPerson') }}
         </a-button>
-        <a-upload accept="application/json" :beforeUpload="handleBeforeUploadJson" :showUploadList="false">
+        <!-- <a-upload accept="application/json" :beforeUpload="handleBeforeUploadJson" :showUploadList="false">
           <a-button>
             <upload-outlined></upload-outlined>
             {{ $t('ui.uploadJSON') }}
@@ -1093,7 +1173,7 @@ export default defineComponent({
         <a-button @click="downloadCanvasAsJson">
           <download-outlined></download-outlined>
           {{ $t('ui.downloadJSON') }}
-        </a-button>
+        </a-button> -->
         <a-button @click="downloadCanvasAsImage">
           <download-outlined></download-outlined>
           {{ $t('ui.downloadImage') }}
@@ -1106,7 +1186,7 @@ export default defineComponent({
             <!-- TODO: make this repetitive code a component. -->
             <div v-if="person.left_hand === undefined && !person.isAnimal">
               <a-button @click="addDefaultObject(person, OpenposeBodyPart.LEFT_HAND)">{{ $t('ui.addLeftHand')
-              }}</a-button>
+                }}</a-button>
               <a-upload accept="application/json"
                 :beforeUpload="(file: Blob) => addJsonObject(file, person, OpenposeBodyPart.LEFT_HAND)"
                 :showUploadList="false">
@@ -1117,7 +1197,7 @@ export default defineComponent({
             </div>
             <div v-if="person.right_hand === undefined && !person.isAnimal">
               <a-button @click="addDefaultObject(person, OpenposeBodyPart.RIGHT_HAND)">{{ $t('ui.addRightHand')
-              }}</a-button>
+                }}</a-button>
               <a-upload accept="application/json"
                 :beforeUpload="(file: Blob) => addJsonObject(file, person, OpenposeBodyPart.RIGHT_HAND)"
                 :showUploadList="false">

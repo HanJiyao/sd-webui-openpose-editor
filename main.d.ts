@@ -1,12 +1,12 @@
-export {};
+// export {};
 
-interface DataFromServer {
-  image_url: string;
-  pose: string;
-}
+// interface DataFromServer {
+//   image_url: string;
+//   pose: string;
+// }
 
-declare global {
-    interface Window {
-        dataFromServer: DataFromServer;
-    }
-}
+// declare global {
+//     interface Window {
+//         dataFromServer: DataFromServer;
+//     }
+// }
