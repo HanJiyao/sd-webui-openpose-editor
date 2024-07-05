@@ -19,6 +19,7 @@ import type { UploadFile } from 'ant-design-vue';
 import LockSwitch from './components/LockSwitch.vue';
 import _ from 'lodash';
 import CryptoJS from 'crypto-js';
+import { Client } from "@gradio/client";
 
 interface LockableUploadFile extends UploadFile {
   locked: boolean;
@@ -29,31 +30,34 @@ interface LockableUploadFile extends UploadFile {
 interface AppData {
   canvasHeight: number;
   canvasWidth: number;
-
-  imageURL: String;
-  referenceURL: String;
-
+  imageURL: string;
+  referenceURL: string;
+  pos: string;
+  neg: string;
+  num_inference_steps: number;
+  seed: number;
+  img_p_scale: number;
+  ctrl_scale: number;
+  cfg: number;
   personName: string;
   hideInvisibleKeypoints: boolean;
   people: Map<number, OpenposePerson>;
-  keypointMap: Map<number, UnwrapRef<OpenposeKeypoint2D>>,
-  canvas: fabric.Canvas | null;
+  canvas: HTMLCanvasElement | null;
   openposeCanvas: fabric.Rect;
-
-  // Fields for uploaded background images.
-  uploadedImageList: LockableUploadFile[];
+  keypointMap: Map<number, UnwrapRef<OpenposeKeypoint2D>>;
+  uploadedImageList: Array<any>;
+  temp_img: HTMLImageElement | null;
   canvasImageMap: Map<string, fabric.Image>;
-
-  // The corresponding OpenposePerson that the user has the collapse element
-  // expanded.
-  activePersonId: string | undefined;
-  // The corresponding OpenposeObject(Hand/Face) that the user has the
-  // collapse element expanded.
-  activeBodyPart: OpenposeBodyPart | undefined;
-
-  // The modal id to post message back to.
+  activePersonId: number | undefined;
+  activeBodyPart: string | undefined;
   modalId: string | undefined;
-};
+  drawingCanvas: HTMLCanvasElement | null;
+  drawing: boolean;
+  maskURL: string;
+  context: CanvasRenderingContext2D | null;
+  color: string;
+  canvasVisible: boolean;
+}
 
 /**
  * The frame message from the main frame (ControlNet).
@@ -340,6 +344,15 @@ export default defineComponent({
       canvasWidth: 512,
       imageURL: '',
       referenceURL: '',
+      maskURL: '',
+      pos: "a photo of a girl on the beach",
+      neg: "ugly, monochrome, two people",
+      num_inference_steps: 12,
+      img_p_scale: 0.7,
+      ctrl_scale: 0.8,
+      cfg: 5,
+      seed: 42,
+
       personName: '',
       hideInvisibleKeypoints: false,
       people: new Map<number, OpenposePerson>(),
@@ -349,25 +362,31 @@ export default defineComponent({
         selectable: false,
         evented: false,
       }),
+
       keypointMap: new Map<number, UnwrapRef<OpenposeKeypoint2D>>(),
       uploadedImageList: [],
+      temp_img: null,
       canvasImageMap: new Map<string, fabric.Image>(),
       activePersonId: undefined,
       activeBodyPart: undefined,
       modalId: undefined,
+      drawingCanvas: null,
+      drawing: false,
+      context: null,
+      color: 'white',
+      canvasVisible: false
     };
   },
   setup() {
     return { OpenposeBodyPart };
   },
   mounted() {
+    const canvas_draw = this.$refs.drawingCanvas as HTMLCanvasElement;
+    this.drawingCanvas = canvas_draw;
+    this.context = canvas_draw.getContext('2d');
+
     this.$nextTick(() => {
-      this.canvas = markRaw(new fabric.Canvas(<HTMLCanvasElement>this.$refs.editorCanvas, {
-        backgroundColor: '#333333',
-        preserveObjectStacking: true,
-        fireRightClick: true,
-        stopContextMenu: true,
-      }));
+      this.canvas = markRaw(new fabric.Canvas(<HTMLCanvasElement>this.$refs.editorCanvas));
 
       this.resizeHTMLCanvas();
       this.canvas.add(this.openposeCanvas);
@@ -378,6 +397,7 @@ export default defineComponent({
       // By default have a example person.
       this.addDefaultPerson();
 
+      // eslint-disable-next-line
       const selectionHandler = (event: fabric.IEvent<MouseEvent>) => {
         if (event.selected) {
           event.selected
@@ -401,7 +421,6 @@ export default defineComponent({
             });
         }
       }
-
       const keypointMoveHandler = (event: fabric.IEvent<MouseEvent>) => {
         if (event.target === undefined)
           return;
@@ -459,7 +478,7 @@ export default defineComponent({
       // scrolls the iframe despite `e.preventDefault` is called. Issue #7.
       // Add keydown event to document
       document.addEventListener('keydown', (e) => {
-        if (e.code === 'Space' || e.code === 'KeyF') {
+        if (e.code === 'KeyF') {
           panningEnabled = true;
           this.canvas!.selection = false;
           // Prevent default behaviour of Space which is scroll the page down.
@@ -469,7 +488,7 @@ export default defineComponent({
 
       // Add keyup event to document
       document.addEventListener('keyup', (e) => {
-        if (e.code === 'Space' || e.code === 'KeyF') {
+        if (e.code === 'KeyF') {
           panningEnabled = false;
           this.canvas!.selection = true;
         }
@@ -520,7 +539,37 @@ export default defineComponent({
     window.removeEventListener('keydown', this.handleKeyDown);
   },
   methods: {
-    handleKeyDown(event) {
+    startDrawingOnCanvas(event: MouseEvent): void {
+      this.drawing = true;
+      if (this.context) {
+        this.context.beginPath();
+        this.context.moveTo(event.offsetX, event.offsetY);
+      }
+    },
+    drawOnCanvas(event: MouseEvent): void {
+      if (!this.drawing || !this.context) return;
+      this.context.lineTo(event.offsetX, event.offsetY);
+      this.context.strokeStyle = this.color;
+      this.context.lineWidth = 50;
+      this.context.stroke();
+    },
+    stopDrawingOnCanvas(): void {
+      this.drawing = false;
+      if (this.drawingCanvas) {
+        this.maskURL = this.drawingCanvas.toDataURL('image/png');
+      }
+    },
+
+    clearDrawingCanvas(): void {
+      if (this.context && this.drawingCanvas) {
+        this.context.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
+      }
+      this.maskURL = '';
+    },
+    toggleCanvasVisibility(): void {
+      this.canvasVisible = !this.canvasVisible;
+    },
+    handleKeyDown(event: { key: string; }) {
       if (event.key === 'g' || event.key === 'G') {
         this.downloadCanvasAsImage();
       }
@@ -757,14 +806,57 @@ export default defineComponent({
       const reader = new FileReader();
       reader.onload = (e) => {
         if (e.target && e.target.result) {
-          this.referenceURL = e.target.result as string;
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.globalAlpha = 0.8;
+
+            if (!ctx) return;
+
+            let width = img.width;
+            let height = img.height;
+            let paddingX = 0;
+            let paddingY = 0;
+
+            if (width > height) {
+              paddingY = (width - height) / 2;
+            } else if (height > width) {
+              paddingX = (height - width) / 2;
+            }
+
+            const size = Math.max(width, height);
+
+            canvas.width = size;
+            canvas.height = size;
+
+            // Fill the canvas with black
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, size, size);
+
+            // Draw the image on the canvas with padding
+            ctx.drawImage(img, paddingX, paddingY, width, height);
+
+            // Resize the canvas to 512x512
+            const finalCanvas = document.createElement('canvas');
+            const finalCtx = finalCanvas.getContext('2d');
+
+            if (!finalCtx) return;
+
+            finalCanvas.width = 512;
+            finalCanvas.height = 512;
+
+            finalCtx.drawImage(canvas, 0, 0, 512, 512);
+            this.referenceURL = finalCanvas.toDataURL('image/png');
+          };
+          img.src = e.target.result as string;
         }
       };
       reader.readAsDataURL(file);
       return false;
     },
     loadBackgroundImageFromURL(url: string) {
-      fabric.Image.fromURL(url, (img) => {
+      fabric.Image.fromURL(url!, (img) => {
         img.set({
           left: this.openposeCanvas.left,
           top: this.openposeCanvas.top,
@@ -835,7 +927,6 @@ export default defineComponent({
       }
       const canvasHeight = poseJson.canvas_height;
       const canvasWidth = poseJson.canvas_width;
-
 
       return (poseJson.people || []).map((personJson): OpenposePerson | undefined => {
         const body = OpenposeBody.create(preprocessPoints(personJson.pose_keypoints_2d, canvasWidth, canvasHeight));
@@ -929,23 +1020,6 @@ export default defineComponent({
       this.uploadedImageList.splice(0); // Clear `uploadedImageList`.
       this.resetZoom();
     },
-    // loadCanvasFromRequestParams() {
-    //   this.clearCanvas();
-    //   const data = window.dataFromServer;
-    //   if (_.isEmpty(data)) {
-    //     return;
-    //   }
-
-    //   let poseJson: IOpenposeJson;
-    //   try {
-    //     poseJson = JSON.parse(data.pose) as IOpenposeJson;
-    //   } catch (ex: any) {
-    //     this.$notify({ title: 'Error', desc: ex.message });
-    //     return;
-    //   }
-    //   this.loadPeopleFromJson(poseJson);
-    //   this.handleBeforeUploadImage(data.image_url);
-    // },
     async loadCanvasFromFrameMessage(message: IncomingFrameMessage) {
       this.modalId = message.modalId;
 
@@ -1004,57 +1078,92 @@ export default defineComponent({
       link.click();
     },
     async downloadCanvasAsImage() {
-      let temp_img: LockableUploadFile | null = null;
-      this.uploadedImageList.forEach(image => {
-        temp_img = image
+      // Clear uploaded images list
+      for (const image of this.uploadedImageList) {
+        this.temp_img = image;
         this.handleRemoveImage(image);
-      });
-      this.uploadedImageList = []
+      }
+      this.uploadedImageList = [];
 
+      // Ensure canvas is available
       if (!this.canvas) return;
       this.resetZoom();
 
       // Get the data URL of the canvas as a PNG image
       const dataUrl = this.canvas.toDataURL({ format: 'image/png' });
 
-      // Crop the image
+      // Create a new canvas for cropping
       const newCanvas = new fabric.StaticCanvas(null, {
         width: this.canvasWidth,
         height: this.canvasHeight,
       });
 
-      if (temp_img) {
-        var imageFile = {
+      // Re-upload previously removed image
+      if (this.temp_img != null) {
+        const imageFile = {
           locked: false,
           scale: 1.0,
           name: 'controlnet input',
-          uid: await calculateHash(temp_img.upload_url),
-          upload_url: temp_img.upload_url
+          uid: await calculateHash(this.temp_img.upload_url!.toString()),
+          upload_url: this.temp_img.upload_url,
         } as LockableUploadFile;
         this.uploadedImageList.push(imageFile);
-        this.loadBackgroundImageFromURL(temp_img.upload_url);
+        this.loadBackgroundImageFromURL(this.temp_img.upload_url!.toString());
       }
+
+      // Crop and process the image if openposeCanvas is available
       if (this.openposeCanvas) {
         fabric.Image.fromURL(dataUrl, img => {
-
           img.set({
-            left: -this.openposeCanvas.left,
-            top: -this.openposeCanvas.top,
+            left: -this.openposeCanvas.left!,
+            top: -this.openposeCanvas.top!,
           });
 
           newCanvas.add(img);
           newCanvas.renderAll();
 
+          // Get the cropped image URL
           const croppedImageUrl = newCanvas.toDataURL({ format: 'image/png' });
+
+          console.log([
+            this.num_inference_steps,
+            this.seed,
+            this.pos,
+            this.neg,
+            this.canvasWidth,
+            this.canvasHeight,
+            this.img_p_scale,
+            this.ctrl_scale,
+            this.cfg,
+            this.referenceURL,
+            this.maskURL,
+            croppedImageUrl,
+            croppedImageUrl
+          ])
+
           fetch("http://localhost:7860/api/generate", {
             method: "POST",
             headers: {
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-              data: [this.referenceURL, croppedImageUrl]
+              data: [
+                this.num_inference_steps,
+                this.seed,
+                this.pos,
+                this.neg,
+                this.canvasWidth,
+                this.canvasHeight,
+                this.img_p_scale,
+                this.ctrl_scale,
+                this.cfg,
+                this.referenceURL,
+                this.maskURL,
+                croppedImageUrl,
+                this.referenceURL
+              ]
             })
-          }).then(res => res.json())  // Parse the JSON of the response
+          }).then(res => res.json())
             .then(async data => {
 
               this.uploadedImageList.forEach(image => {
@@ -1081,8 +1190,9 @@ export default defineComponent({
             });
         });
       }
-    },
+    }
   },
+
   components: {
     PlusSquareOutlined,
     CloseOutlined,
@@ -1098,17 +1208,6 @@ export default defineComponent({
 <template>
   <a-row>
     <a-col :span="8" id="control-panel">
-      <!-- <a-button v-if="modalId !== undefined" @click="sendCanvasAsFrameMessage">
-        {{ $t('ui.sendPose') }}
-      </a-button>
-      <a-divider orientation="left" orientation-margin="0px">
-        {{ $t('ui.keybinding') }}
-      </a-divider>
-      <a-descriptions :column="1">
-        <a-descriptions-item :label="$t('ui.panningKeybinding')">{{ $t('ui.panningDescription') }}</a-descriptions-item>
-        <a-descriptions-item :label="$t('ui.zoomKeybinding')">{{ $t('ui.zoomDescription') }}</a-descriptions-item>
-        <a-descriptions-item :label="$t('ui.hideKeybinding')">{{ $t('ui.hideDescription') }}</a-descriptions-item>
-      </a-descriptions> -->
       <a-divider orientation="left" orientation-margin="0px">
         {{ $t('ui.canvas') }}
       </a-divider>
@@ -1128,34 +1227,40 @@ export default defineComponent({
         Reference Image
       </a-divider>
       <a-upload list-type="picture" accept="image/*" :beforeUpload="handleUpdateRef" :show-upload-list="false">
-        <a-button v-if="!referenceURL">
+        <a-button>
           <upload-outlined></upload-outlined>
           Upload Reference
         </a-button>
-        <a-image v-else :src="referenceURL.toString()" alt="avatar" :width="512" :height="512" />
       </a-upload>
-      <!-- <a-divider orientation="left" orientation-margin="0px">
-        {{ $t('ui.backgroundImage') }}
+
+      <div>
+        <div
+          :style="{ 'height': '512px', 'width': '512px', 'background-color': 'black', position: 'absolute', top: 0, left: 0 }">
+        </div>
+        <a-image :style="{ position: 'absolute', top: 0, left: 0 }" :src="referenceURL.toString()" alt="avatar"
+          :width="512" :height="512" :preview="false" />
+        <div
+          :style="{ display: canvasVisible ? 'block' : 'none', position: 'absolute', top: 0, left: 0, opacity: 0.8 }">
+          <div
+            :style="{ 'height': '512px', 'width': '512px', 'background-color': 'black', position: 'absolute', top: 0, left: 0 }">
+          </div>
+          <canvas ref="drawingCanvas" :width="512" :height="512" @mousedown="startDrawingOnCanvas"
+            @mousemove="drawOnCanvas" @mouseup="stopDrawingOnCanvas" @mouseleave="stopDrawingOnCanvas"></canvas>
+        </div>
+      </div>
+      <a-space>
+        <a-button @click="toggleCanvasVisibility">{{ canvasVisible ? 'Hide' : 'Show' }} Mask</a-button>
+        <a-button @click="clearDrawingCanvas">Clear Mask</a-button>
+      </a-space>
+      <a-divider orientation="left" orientation-margin="0px">
+        Output
       </a-divider>
-      <a-upload v-model:file-list="uploadedImageList" list-type="picture" accept="image/*"
-        :beforeUpload="handleBeforeUploadImage" @remove="handleRemoveImage">
-        <a-button>
-          <upload-outlined></upload-outlined>
-          {{ $t('ui.uploadImage') }}
+      <a-space>
+        <a-button @click="downloadCanvasAsImage" type="primary" size="large">
+          <download-outlined></download-outlined>
+          Generate
         </a-button>
-        <template #itemRender="{ file, actions }">
-          <a-card class="uploaded-file-item">
-            <LockSwitch :locked="file.locked !== undefined ? file.locked : false"
-              @update:locked="onLockedChange(file, $event)" />
-            <img v-if="isImage(file)" :src="file.thumbUrl || file.url" :alt="file.name" class="image-thumbnail" />
-            <span>{{ file.name }}</span>
-            <a-input-number class="scale-ratio-input" addon-before="scale ratio"
-              @update:value="scaleImage(file, $event)" :min="0" :value="file.scale !== undefined ? file.scale : 1.0"
-              :precision="2" />
-            <close-outlined @click="actions.remove" class="close-icon" />
-          </a-card>
-        </template>
-      </a-upload> -->
+      </a-space>
       <a-divider orientation="left" orientation-margin="0px">
         {{ $t('ui.poseControl') }}
       </a-divider>
@@ -1163,20 +1268,6 @@ export default defineComponent({
         <a-button @click="addDefaultPerson">
           <plus-square-outlined />
           {{ $t('ui.addPerson') }}
-        </a-button>
-        <!-- <a-upload accept="application/json" :beforeUpload="handleBeforeUploadJson" :showUploadList="false">
-          <a-button>
-            <upload-outlined></upload-outlined>
-            {{ $t('ui.uploadJSON') }}
-          </a-button>
-        </a-upload>
-        <a-button @click="downloadCanvasAsJson">
-          <download-outlined></download-outlined>
-          {{ $t('ui.downloadJSON') }}
-        </a-button> -->
-        <a-button @click="downloadCanvasAsImage">
-          <download-outlined></download-outlined>
-          {{ $t('ui.downloadImage') }}
         </a-button>
       </a-space>
       <a-collapse accordion :activeKey="activePersonId" @update:activeKey="updateActivePerson">
@@ -1229,6 +1320,33 @@ export default defineComponent({
           </template>
         </OpenposeObjectPanel>
       </a-collapse>
+
+      <a-divider orientation="left" orientation-margin="0px">
+        Advance Settings
+      </a-divider>
+      <a-space direction="vertical" style="width:100%">
+        <a-form-item label="Positive Prompt">
+          <a-input v-model:value="pos" />
+        </a-form-item>
+        <a-form-item label="Negative Prompt">
+          <a-input v-model:value="neg" />
+        </a-form-item>
+        <a-form-item label="Steps">
+          <a-input v-model:value="num_inference_steps" />
+        </a-form-item>
+        <a-form-item label="Seed">
+          <a-input v-model:value="seed" />
+        </a-form-item>
+        <a-form-item label="Reference Scale">
+          <a-input v-model:value="img_p_scale" />
+        </a-form-item>
+        <a-form-item label="Control Scale">
+          <a-input v-model:value="ctrl_scale" />
+        </a-form-item>
+        <a-form-item label="CFG">
+          <a-input v-model:value="cfg" />
+        </a-form-item>
+      </a-space>
     </a-col>
 
     <a-col :span="16" id="canvas-panel">
