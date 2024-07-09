@@ -1,5 +1,6 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["USE_FLASH_ATTENTION"] = "0"
 import argparse
 import numpy as np
 import torch
@@ -33,10 +34,6 @@ def parse_args():
         "--adapter_path_if_ignore",
         default=["models/final_60000.safetensors",True]
     )
-    parser.add_argument("--img_prompt1",default="assets/fortest_fullbody/788.png")
-    parser.add_argument("--img_prompt2",default="assets/fortest_halfbody/11_.png")
-    parser.add_argument("--img_prompt3",default="assets/fortest_halfbody/479.png")
-    parser.add_argument("--control_condition",default="assets/dance_05.png")
     parser.add_argument("--img_prompt_mask",default={"1_body": []})
     parser.add_argument("--img_prompt_mask_scale",default={"0_global":1,"1_body":1})# first value for whole, second value for mask
     args = parser.parse_args()
@@ -191,7 +188,13 @@ def test(
         ctrl_scale, 
         txt_p_scale, 
         imginput,
-        latentmask
+        latentmask,
+        apply_ref2,
+        imginput2,
+        latentmask2,
+        apply_ref3,
+        imginput3,
+        latentmask3,
     ):
     
     global pipe, ip_model
@@ -215,10 +218,19 @@ def test(
     pil_image, img_prompt_attn_mask=prepare_ref_refmask(imginput, latentmask)
     pil_images.append(pil_image)
     img_prompt_attn_masks.append(img_prompt_attn_mask)
+    
+    if apply_ref2:
+        pil_image2, img_prompt_attn_mask2=prepare_ref_refmask(imginput2, latentmask2)
+        pil_images.append(pil_image2)
+        img_prompt_attn_masks.append(img_prompt_attn_mask2)
+        
+    if apply_ref3:
+        pil_image3, img_prompt_attn_mask3=prepare_ref_refmask(imginput3, latentmask3)
+        pil_images.append(pil_image3)
+        img_prompt_attn_masks.append(img_prompt_attn_mask3)
 
     if len(img_prompt_attn_masks)==1:
         img_prompt_attn_masks=img_prompt_attn_masks[0]
-
 
     ip_model.image=processed_control_condition
     ip_model.controlnet_conditioning_scale=args.ctrl_scale
@@ -238,89 +250,6 @@ def test(
         width=args.width)
 
     return images[0]
-
-def prepare_ref_refmask(imginput, latentmask):
-    global args
-    # todo ip mask
-    maskinput = imginput["layers"][0]
-    maskgray = maskinput[:, :, 3] / 255.0
-    total_sum = np.sum(maskgray)
-
-    if total_sum == 0:
-        maskindices = np.array(range(args.tokennumbers))
-    else:
-        args.img_prompt_mask_scale["0_global"] = 0
-        # Add padding
-        top, bottom, left, right = 0, 0, 0, 0
-        border_type = cv2.BORDER_CONSTANT
-        value = [0]  # Padding color for constant border type (black)
-        m_width, m_height = maskgray.shape
-        if m_width > m_height:
-            diff = round((m_width - m_height) / 2)
-            top, bottom = diff, diff
-            maskgray = cv2.copyMakeBorder(maskgray, top, bottom, left, right, border_type, value=value)
-        elif m_height > m_width:
-            diff = round((m_height - m_width) / 2)
-            left, right = diff, diff
-            maskgray = cv2.copyMakeBorder(maskgray, top, bottom, left, right, border_type, value=value)
-        if args.tokennumbers == 257:
-            mask16x16 = cv2.resize(maskgray, [16, 16])
-            maskflat = mask16x16.flatten()
-            maskindices = np.nonzero(maskflat)[0] + 1  # because index 0 reserved for global feature
-        elif args.tokennumbers == 1025:
-            mask32x32 = cv2.resize(maskgray, [32, 32])
-            maskflat = mask32x32.flatten()
-            maskindices = np.nonzero(maskflat)[0] + 1  # because index 0 reserved for global feature
-    args.img_prompt_mask["1_body"] = maskindices.tolist()
-
-    # todo set image prompt strength
-    strengthen_id_scales_2 = np.tile(np.array([args.img_prompt_mask_scale["0_global"]], dtype=np.float16), (args.tokennumbers))
-    
-    # todo latent mask
-    maskgray_latent = latentmask["layers"][0][:, :, 3] / 255.0
-    total_sum_latent = np.sum(maskgray_latent)
-    if total_sum_latent == 0:
-        latentmask_weight = torch.ones(((args.height // 8) * (args.width // 8),), dtype=torch.float16).to(
-            device=ip_model.device)
-    else:
-        maskgray_latent = cv2.resize(maskgray_latent, [(args.height // 8), (args.width // 8)])
-        maskgray_latent = maskgray_latent.flatten()
-        maskindices_latent = np.nonzero(maskgray_latent)
-        latentmask_weight = torch.zeros(((args.height // 8) * (args.width // 8),), dtype=torch.float16).to(
-            device=ip_model.device)
-        latentmask_weight[maskindices_latent] = 1
-
-    for query, m_id in args.img_prompt_mask_scale.items():
-        if query == "0_global": continue
-        strengthen_id_scales_2[np.array(args.img_prompt_mask[query])] = m_id
-    strengthen_id_scales_2 = strengthen_id_scales_2.tolist()
-
-    # todo ip attn mask
-    img_prompt_attn_mask = torch.tensor(strengthen_id_scales_2, dtype=torch.float16).repeat(
-        (args.height // 8) * (args.width // 8), 1).to(device=ip_model.device)  # (64*64)*257
-
-    # todo then apply latent mask
-    img_prompt_attn_mask = img_prompt_attn_mask.permute(1, 0) * latentmask_weight
-    img_prompt_attn_mask = img_prompt_attn_mask.permute(1, 0)
-
-    image = imginput["background"][:, :, 0:3]
-    r_width, r_height, _ = image.shape
-
-    # if image is not a square image, square it
-    # Add padding
-    top, bottom, left, right = 0, 0, 0, 0
-    border_type = cv2.BORDER_CONSTANT
-    value = [0, 0, 0]  # Padding color for constant border type (black)
-    if r_width != r_height and r_width > r_height:
-        diff = round((r_width - r_height) / 2)
-        top, bottom = diff, diff
-        image = cv2.copyMakeBorder(image, top, bottom, left, right, border_type, value=value)
-    elif r_width != r_height and r_height > r_width:
-        diff = round((r_height - r_width) / 2)
-        left, right = diff, diff
-        image = cv2.copyMakeBorder(image, top, bottom, left, right, border_type, value=value)
-    
-    return Image.fromarray(image), img_prompt_attn_mask
 
 def base64_to_image(base64_str):
     if "base64" in base64_str:
@@ -422,10 +351,16 @@ def generate(
         img_p_scale, 
         ctrl_scale, 
         txt_p_scale, 
+        
+        condition_base64,
+        
         ref_base64,
         ref_mask_base64,
-        condition_base64,
-        condition_mask_base64
+        condition_mask_base64,
+        
+        ref2_base64,
+        ref2_mask_base64,
+        condition2_mask_base64
     ):
     
     global pipe, ip_model
@@ -446,13 +381,16 @@ def generate(
     pil_images=[]
     img_prompt_attn_masks=[]
     
-    pil_image = Image.fromarray(base64_to_image(ref_base64))
-
-    img_prompt_attn_mask=prepare_ref_refmask_base64(ref_mask_base64, condition_mask_base64)
+    pil_images.append(Image.fromarray(base64_to_image(ref_base64)))
     
-    pil_images.append(pil_image)
-    img_prompt_attn_masks.append(img_prompt_attn_mask)
+    if ref2_base64 and ref2_base64 != "":
+        pil_images.append(Image.fromarray(base64_to_image(ref2_base64)))
 
+    img_prompt_attn_masks.append(prepare_ref_refmask_base64(ref_mask_base64, condition_mask_base64))
+    
+    if condition2_mask_base64 and condition2_mask_base64 != "":
+        img_prompt_attn_masks.append(prepare_ref_refmask_base64(ref2_mask_base64, condition2_mask_base64))
+    
     if len(img_prompt_attn_masks)==1:
         img_prompt_attn_masks=img_prompt_attn_masks[0]
 
@@ -476,6 +414,12 @@ def generate(
 
     return images[0]
 
+def toggle_visibility(apply_ref):
+    return gr.update(visible=apply_ref)
+
+def update_latent_masks(img):
+    return img, img, img
+
 def main():
     global args
     args = parse_args()
@@ -483,9 +427,9 @@ def main():
         demo.title = "Ami-adapter"
         with gr.Row():
             with gr.Column():
-                c_pos = gr.Textbox(label="Positive prompts", value="a photo of a girl on the beach")
-                c_neg = gr.Textbox(label="Negative prompts", value="ugly, monochrome, two people")
-                with gr.Accordion("Advance Settings", open=False):
+                with gr.Accordion("Settings", open=False):
+                    c_pos = gr.Textbox(label="Positive prompts", value="a photo of a girl on the beach")
+                    c_neg = gr.Textbox(label="Negative prompts", value="ugly, monochrome, two people")
                     with gr.Row():
                         c_stepnum = gr.Number(label="Steps", value=args.num_inference_steps, minimum=1, maximum=100)
                         c_seednum = gr.Number(label="Seed", value=42, minimum=0)
@@ -495,14 +439,29 @@ def main():
                         img_p_scale = gr.Slider(label="img_p_scale", value=args.img_p_scale, minimum=0.0, maximum=1.0)
                         ctrl_scale = gr.Slider(label="ctrl_scale", value=args.ctrl_scale, minimum=0.0, maximum=1.0)
                         txt_p_scale = gr.Slider(label="txt_p_scale", value=args.txt_p_scale, minimum=0.0, maximum=10.0)
+                    condition_img = gr.Image(label="Condition Image", type="pil")
+                
+                with gr.Group():
+                    with gr.Row():
+                        imginput = gr.ImageMask(label="Reference img", brush=Brush(colors=["#FFFFFF"]))
+                        latentmask = gr.ImageMask(label="Latent mask", brush=Brush(colors=["#FFFFFF"]))
                         
-                with gr.Row():
-                    imginput = gr.ImageMask(label="Reference img", value=args.img_prompt1,
-                                                brush=Brush(colors=["#FFFFFF"], color_mode="fixed"))
-                    
-                    latentmask = gr.ImageMask(label="Latent mask", value=args.control_condition,
-                                                brush=Brush(colors=["#FFFFFF"], color_mode="fixed"))
-                    
+                with gr.Group():
+                    apply_ref2 = gr.Checkbox(label="Apply 2nd Ref", value=False) 
+                    with gr.Row(visible=False) as ref2_block:
+                        imginput2 = gr.ImageMask(label="Reference img", brush=Brush(colors=["#FFFFFF"]))
+                        latentmask2 = gr.ImageMask(label="Latent mask", brush=Brush(colors=["#FFFFFF"]))
+                apply_ref2.change(fn=toggle_visibility, inputs=apply_ref2, outputs=ref2_block)
+                
+                with gr.Group():
+                    apply_ref3 = gr.Checkbox(label="Apply 3rd Ref", value=False)
+                    with gr.Row(visible=False) as ref3_block:
+                        imginput3 = gr.ImageMask(label="Reference img", brush=Brush(colors=["#FFFFFF"]))
+                        latentmask3 = gr.ImageMask(label="Latent mask", brush=Brush(colors=["#FFFFFF"]))
+                    apply_ref3.change(fn=toggle_visibility, inputs=apply_ref3, outputs=ref3_block)
+                
+                condition_img.change(fn=update_latent_masks, inputs=condition_img, outputs=[latentmask, latentmask2, latentmask3])
+            
             with gr.Column():
                 out = gr.Image(label="Generated image", type="pil")
         
@@ -519,7 +478,13 @@ def main():
             ctrl_scale, 
             txt_p_scale,
             imginput,
-            latentmask
+            latentmask,
+            apply_ref2,
+            imginput2,
+            latentmask2,
+            apply_ref3,
+            imginput3,
+            latentmask3,
         ]
         outputs = [out]
         
@@ -527,10 +492,13 @@ def main():
         
         
         with gr.Accordion("API", open=False):
+            condition_base64 = gr.Textbox(label="Condition Image base64")
             ref_base64 = gr.Textbox(label="Reference Image base64")
             ref_mask_base64 = gr.Textbox(label="Reference Image Mask base64")
-            condition_base64 = gr.Textbox(label="Condition Image base64")
             condition_mask_base64 = gr.Textbox(label="Condition Image Mask base64")
+            ref2_base64 = gr.Textbox(label="Reference Image base64")
+            ref2_mask_base64 = gr.Textbox(label="Reference Image Mask base64")
+            condition2_mask_base64 = gr.Textbox(label="Condition Image Mask base64")
             
             generate_inputs = [
                 c_stepnum, 
@@ -542,10 +510,16 @@ def main():
                 img_p_scale, 
                 ctrl_scale, 
                 txt_p_scale,
+                
+                condition_base64,
+                
                 ref_base64,
                 ref_mask_base64,
-                condition_base64,
-                condition_mask_base64
+                condition_mask_base64,
+                
+                ref2_base64,
+                ref2_mask_base64,
+                condition2_mask_base64,
             ]
             
             apiBtn = gr.Button(value="API")

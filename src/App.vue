@@ -1,9 +1,8 @@
 <script lang="ts">
 import { defineComponent, type UnwrapRef, reactive, markRaw, toRaw } from 'vue';
 import { fabric } from 'fabric';
-import { PlusSquareOutlined, CloseOutlined, UploadOutlined, DownloadOutlined } from '@ant-design/icons-vue';
+import { PlusSquareOutlined, UploadOutlined } from '@ant-design/icons-vue';
 import OpenposeObjectPanel from './components/OpenposeObjectPanel.vue';
-import Header from './components/Header.vue';
 import {
   OpenposePerson,
   OpenposeBody,
@@ -16,10 +15,8 @@ import {
   OpenposeAnimal,
 } from './Openpose';
 import type { UploadFile } from 'ant-design-vue';
-import LockSwitch from './components/LockSwitch.vue';
 import _ from 'lodash';
 import CryptoJS from 'crypto-js';
-import { Client } from "@gradio/client";
 
 interface LockableUploadFile extends UploadFile {
   locked: boolean;
@@ -30,8 +27,7 @@ interface LockableUploadFile extends UploadFile {
 interface AppData {
   canvasHeight: number;
   canvasWidth: number;
-  imageURL: string;
-  referenceURL: string;
+
   pos: string;
   neg: string;
   num_inference_steps: number;
@@ -39,6 +35,8 @@ interface AppData {
   img_p_scale: number;
   ctrl_scale: number;
   cfg: number;
+
+  imageURL: string;
   personName: string;
   hideInvisibleKeypoints: boolean;
   people: Map<number, OpenposePerson>;
@@ -51,12 +49,38 @@ interface AppData {
   activePersonId: number | undefined;
   activeBodyPart: string | undefined;
   modalId: string | undefined;
-  drawingCanvas: HTMLCanvasElement | null;
-  drawing: boolean;
-  maskURL: string;
-  context: CanvasRenderingContext2D | null;
   color: string;
+
+  conditionURL: string;
+
+  referenceURL: string;
+
   canvasVisible: boolean;
+  maskContext: CanvasRenderingContext2D | null;
+  maskDrawingCanvas: HTMLCanvasElement | null;
+  maskDrawing: boolean;
+  maskURL: string;
+
+  latentVisible: boolean;
+  latentContext: CanvasRenderingContext2D | null;
+  latentDrawingCanvas: HTMLCanvasElement | null;
+  latentDrawing: boolean,
+  maskURL: string;
+
+  reference2Visible: boolean
+  referenceURL2: string;
+
+  canvasVisible2: boolean;
+  maskContext2: CanvasRenderingContext2D | null;
+  maskDrawingCanvas2: HTMLCanvasElement | null;
+  maskDrawing2: boolean;
+  maskURL2: string;
+
+  latentVisible2: boolean;
+  latentContext2: CanvasRenderingContext2D | null;
+  latentDrawingCanvas2: HTMLCanvasElement | null;
+  latentDrawing2: boolean,
+  latentURL2: string;
 }
 
 /**
@@ -95,7 +119,7 @@ const default_left_hand_keypoints: [number, number, number][] = [
     1
   ],
   [
-    26.000015258789062,
+    26.00001525878906,
     109.6749968987715,
     1
   ],
@@ -342,17 +366,17 @@ export default defineComponent({
     return {
       canvasHeight: 512,
       canvasWidth: 512,
-      imageURL: '',
-      referenceURL: '',
-      maskURL: '',
-      pos: "a photo of a girl on the beach",
-      neg: "ugly, monochrome, two people",
+      conditionURL: '',
+
+      pos: "girl, beach, best quality, masterpiece",
+      neg: "ugly, monochrome",
       num_inference_steps: 12,
       img_p_scale: 0.7,
       ctrl_scale: 0.8,
       cfg: 5,
       seed: 42,
 
+      imageURL: '',
       personName: '',
       hideInvisibleKeypoints: false,
       people: new Map<number, OpenposePerson>(),
@@ -370,20 +394,58 @@ export default defineComponent({
       activePersonId: undefined,
       activeBodyPart: undefined,
       modalId: undefined,
-      drawingCanvas: null,
-      drawing: false,
-      context: null,
       color: 'white',
-      canvasVisible: false
+
+      referenceURL: '',
+
+      maskContext: null,
+      canvasVisible: true,
+      maskDrawingCanvas: null,
+      maskDrawing: false,
+      maskURL: '',
+
+      latentContext: null,
+      latentVisible: false,
+      latentDrawingCanvas: null,
+      latentDrawing: false,
+      latentURL: '',
+
+      reference2Visible: false,
+      referenceURL2: '',
+
+      canvasVisible2: true,
+      maskContext2: null,
+      maskDrawingCanvas2: null,
+      maskDrawing2: false,
+      maskURL2: '',
+
+      latentVisible2: true,
+      latentContext2: null,
+      latentDrawingCanvas2: null,
+      latentDrawing2: false,
+      latentURL2: '',
     };
   },
   setup() {
     return { OpenposeBodyPart };
   },
   mounted() {
-    const canvas_draw = this.$refs.drawingCanvas as HTMLCanvasElement;
-    this.drawingCanvas = canvas_draw;
-    this.context = canvas_draw.getContext('2d');
+    const canvas_draw = this.$refs.maskDrawingCanvas as HTMLCanvasElement;
+    this.maskDrawingCanvas = canvas_draw;
+    this.maskContext = canvas_draw.getContext('2d');
+
+    const canvas_draw_latent = this.$refs.latentDrawingCanvas as HTMLCanvasElement;
+    this.latentDrawingCanvas = canvas_draw_latent;
+    this.latentContext = canvas_draw_latent.getContext('2d');
+
+    const canvas_draw2 = this.$refs.maskDrawingCanvas2 as HTMLCanvasElement;
+    this.maskDrawingCanvas2 = canvas_draw2;
+    this.maskContext2 = canvas_draw2.getContext('2d');
+
+    const canvas_draw_latent2 = this.$refs.latentDrawingCanvas2 as HTMLCanvasElement;
+    this.latentDrawingCanvas2 = canvas_draw_latent2;
+    this.latentContext2 = canvas_draw_latent2.getContext('2d');
+
 
     this.$nextTick(() => {
       this.canvas = markRaw(new fabric.Canvas(<HTMLCanvasElement>this.$refs.editorCanvas));
@@ -421,6 +483,7 @@ export default defineComponent({
             });
         }
       }
+
       const keypointMoveHandler = (event: fabric.IEvent<MouseEvent>) => {
         if (event.target === undefined)
           return;
@@ -478,7 +541,7 @@ export default defineComponent({
       // scrolls the iframe despite `e.preventDefault` is called. Issue #7.
       // Add keydown event to document
       document.addEventListener('keydown', (e) => {
-        if (e.code === 'KeyF') {
+        if (e.key === '=') {
           panningEnabled = true;
           this.canvas!.selection = false;
           // Prevent default behaviour of Space which is scroll the page down.
@@ -488,13 +551,14 @@ export default defineComponent({
 
       // Add keyup event to document
       document.addEventListener('keyup', (e) => {
-        if (e.code === 'KeyF') {
+        if (e.key === '=') {
           panningEnabled = false;
           this.canvas!.selection = true;
         }
       });
 
       // Attach the mouse down event to start panning
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       this.canvas.on('mouse:down', (opt: fabric.IEvent) => {
         if (panningEnabled) {
           panning = true;
@@ -539,38 +603,115 @@ export default defineComponent({
     window.removeEventListener('keydown', this.handleKeyDown);
   },
   methods: {
-    startDrawingOnCanvas(event: MouseEvent): void {
-      this.drawing = true;
-      if (this.context) {
-        this.context.beginPath();
-        this.context.moveTo(event.offsetX, event.offsetY);
+    startDrawingOnMaskCanvas(event: MouseEvent, target: String): void {
+      console.log(target)
+      if (target == "mask") {
+        this.maskDrawing = true;
+        if (this.maskContext) {
+          this.maskContext.beginPath();
+          this.maskContext.moveTo(event.offsetX, event.offsetY);
+        }
+      } else if (target == "latent") {
+        this.latentDrawing = true;
+        if (this.latentContext) {
+          this.latentContext.beginPath();
+          this.latentContext.moveTo(event.offsetX, event.offsetY);
+        }
+      } else if (target == "mask2") {
+        this.maskDrawing2 = true;
+        if (this.maskContext2) {
+          this.maskContext2.beginPath();
+          this.maskContext2.moveTo(event.offsetX, event.offsetY);
+        }
+      } else if (target == "latent2") {
+        this.latentDrawing2 = true;
+        if (this.latentContext2) {
+          this.latentContext2.beginPath();
+          this.latentContext2.moveTo(event.offsetX, event.offsetY);
+        }
       }
     },
-    drawOnCanvas(event: MouseEvent): void {
-      if (!this.drawing || !this.context) return;
-      this.context.lineTo(event.offsetX, event.offsetY);
-      this.context.strokeStyle = this.color;
-      this.context.lineWidth = 50;
-      this.context.stroke();
-    },
-    stopDrawingOnCanvas(): void {
-      this.drawing = false;
-      if (this.drawingCanvas) {
-        this.maskURL = this.drawingCanvas.toDataURL('image/png');
+    drawOnMaskCanvas(event: MouseEvent, target: String): void {
+      if (target == "mask") {
+        if (!this.maskDrawing || !this.maskContext) return;
+        this.maskContext.lineTo(event.offsetX, event.offsetY);
+        this.maskContext.strokeStyle = this.color;
+        this.maskContext.lineWidth = 50;
+        this.maskContext.stroke();
+      } else if (target == "latent") {
+        if (!this.latentDrawing || !this.latentContext) return;
+        this.latentContext.lineTo(event.offsetX, event.offsetY);
+        this.latentContext.strokeStyle = this.color;
+        this.latentContext.lineWidth = 50;
+        this.latentContext.stroke();
+      } else if (target == "mask2") {
+        if (!this.maskDrawing2 || !this.maskContext2) return;
+        this.maskContext2.lineTo(event.offsetX, event.offsetY);
+        this.maskContext2.strokeStyle = this.color;
+        this.maskContext2.lineWidth = 50;
+        this.maskContext2.stroke();
+      } else if (target == "latent2") {
+        if (!this.latentDrawing2 || !this.latentContext2) return;
+        this.latentContext2.lineTo(event.offsetX, event.offsetY);
+        this.latentContext2.strokeStyle = this.color;
+        this.latentContext2.lineWidth = 50;
+        this.latentContext2.stroke();
       }
+    },
+    stopDrawingMaskOnCanvas(target: String): void {
+      if (target == "mask") {
+        this.maskDrawing = false;
+        if (this.maskDrawingCanvas) {
+          this.maskURL = this.maskDrawingCanvas.toDataURL('image/png');
+        }
+      } else if (target == "latent") {
+        this.latentDrawing = false;
+        if (this.latentDrawingCanvas) {
+          this.latentURL = this.latentDrawingCanvas.toDataURL('image/png');
+        }
+      } else if (target == "mask2") {
+        this.maskDrawing2 = false;
+        if (this.maskDrawingCanvas2) {
+          this.maskURL2 = this.maskDrawingCanvas2.toDataURL('image/png');
+        }
+      } else if (target == "latent2") {
+        this.latentDrawing2 = false;
+        if (this.latentDrawingCanvas2) {
+          this.latentURL2 = this.latentDrawingCanvas2.toDataURL('image/png');
+        }
+      }
+
+
     },
 
-    clearDrawingCanvas(): void {
-      if (this.context && this.drawingCanvas) {
-        this.context.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
+    clearDrawingCanvas(target: String): void {
+      if (target == "mask") {
+        if (this.maskContext && this.maskDrawingCanvas) {
+          this.maskContext.clearRect(0, 0, this.maskDrawingCanvas.width, this.maskDrawingCanvas.height);
+        }
+        this.maskURL = '';
+      } else if (target == "latent") {
+        if (this.latentContext && this.latentDrawingCanvas) {
+          this.latentContext.clearRect(0, 0, this.latentDrawingCanvas.width, this.latentDrawingCanvas.height);
+        }
+        this.latentURL = '';
+      } else if (target == "mask2") {
+        if (this.maskContext2 && this.maskDrawingCanvas2) {
+          this.maskContext2.clearRect(0, 0, this.maskDrawingCanvas2.width, this.maskDrawingCanvas2.height);
+        }
+        this.maskURL2 = '';
+      } else if (target == "latent2") {
+        if (this.latentContext2 && this.latentDrawingCanvas2) {
+          this.latentContext2.clearRect(0, 0, this.latentDrawingCanvas2.width, this.latentDrawingCanvas2.height);
+        }
+        this.latentURL2 = '';
       }
-      this.maskURL = '';
     },
     toggleCanvasVisibility(): void {
       this.canvasVisible = !this.canvasVisible;
     },
     handleKeyDown(event: { key: string; }) {
-      if (event.key === 'g' || event.key === 'G') {
+      if (event.key === '\\' || event.key === '|') {
         this.downloadCanvasAsImage();
       }
     },
@@ -798,11 +939,9 @@ export default defineComponent({
         this.loadBackgroundImageFromURL(e.target!.result! as string);
       };
       reader.readAsDataURL(file);
-
-      // Return false to prevent the default upload behavior
       return false;
     },
-    handleUpdateRef(file: Blob) {
+    handleUpdateRef(file: Blob, target: number) {
       const reader = new FileReader();
       reader.onload = (e) => {
         if (e.target && e.target.result) {
@@ -847,7 +986,10 @@ export default defineComponent({
             finalCanvas.height = 512;
 
             finalCtx.drawImage(canvas, 0, 0, 512, 512);
-            this.referenceURL = finalCanvas.toDataURL('image/png');
+            if (target == 1)
+              this.referenceURL = finalCanvas.toDataURL('image/png');
+            else if (target == 2)
+              this.referenceURL2 = finalCanvas.toDataURL('image/png');
           };
           img.src = e.target.result as string;
         }
@@ -1124,6 +1266,7 @@ export default defineComponent({
 
           // Get the cropped image URL
           const croppedImageUrl = newCanvas.toDataURL({ format: 'image/png' });
+          this.conditionURL = croppedImageUrl
 
           console.log([
             this.num_inference_steps,
@@ -1135,10 +1278,13 @@ export default defineComponent({
             this.img_p_scale,
             this.ctrl_scale,
             this.cfg,
+            croppedImageUrl,
             this.referenceURL,
             this.maskURL,
-            croppedImageUrl,
-            croppedImageUrl
+            this.latentURL,
+            this.referenceURL2,
+            this.maskURL2,
+            this.latentURL2
           ])
 
           fetch("http://localhost:7860/api/generate", {
@@ -1157,21 +1303,24 @@ export default defineComponent({
                 this.img_p_scale,
                 this.ctrl_scale,
                 this.cfg,
+                croppedImageUrl,
                 this.referenceURL,
                 this.maskURL,
-                croppedImageUrl,
-                this.referenceURL
+                this.latentURL,
+                this.referenceURL2,
+                this.maskURL2,
+                this.latentURL2
               ]
             })
           }).then(res => res.json())
             .then(async data => {
-
               this.uploadedImageList.forEach(image => {
                 this.handleRemoveImage(image);
               });
               this.uploadedImageList = []
 
-              let newImageURL = data.data[0].url.toString()
+              let newImageURL = data.data[0].url.toString();
+
               console.log(newImageURL)
               this.imageURL = newImageURL;
 
@@ -1195,12 +1344,8 @@ export default defineComponent({
 
   components: {
     PlusSquareOutlined,
-    CloseOutlined,
     UploadOutlined,
-    DownloadOutlined,
     OpenposeObjectPanel,
-    LockSwitch,
-    Header,
   }
 });
 </script>
@@ -1208,6 +1353,122 @@ export default defineComponent({
 <template>
   <a-row>
     <a-col :span="8" id="control-panel">
+
+      <a-divider orientation="left" orientation-margin="0px">
+        Generate by key "\"
+      </a-divider>
+      <a-space>
+        <a-button @click="downloadCanvasAsImage" type="primary" size="large">
+          Generate
+        </a-button>
+      </a-space>
+
+      <a-divider orientation="left" orientation-margin="0px">
+        Reference Image
+      </a-divider>
+      <a-upload list-type="picture" accept="image/*" :beforeUpload="file => handleUpdateRef(file, 1)"
+        :show-upload-list="false">
+        <a-button>
+          <upload-outlined></upload-outlined>
+          Upload Reference
+        </a-button>
+      </a-upload>
+
+      <div>
+        <div
+          :style="{ 'height': '512px', 'width': '512px', 'background-color': 'black', position: 'absolute', top: 0, left: 0 }">
+        </div>
+        <a-image :style="{ position: 'absolute', top: 0, left: 0 }" :src="referenceURL.toString()" alt="avatar"
+          :width="512" :height="512" :preview="false" />
+        <div :style="{ position: 'absolute', top: 0, left: 0, opacity: 0.8 }">
+          <!-- <div
+            :style="{ 'height': '512px', 'width': '512px', 'background-color': 'black', position: 'absolute', top: 0, left: 0 }">
+          </div> -->
+          <canvas ref="maskDrawingCanvas" :width="512" :height="512"
+            @mousedown="startDrawingOnMaskCanvas($event, 'mask')" @mousemove="drawOnMaskCanvas($event, 'mask')"
+            @mouseup="stopDrawingMaskOnCanvas('mask')" @mouseleave="stopDrawingMaskOnCanvas('mask')"></canvas>
+        </div>
+      </div>
+      <a-space>
+        <!-- <a-button @click="toggleCanvasVisibility">{{ canvasVisible ? 'Hide' : 'Show' }} Mask</a-button> -->
+        <a-button @click="clearDrawingCanvas('mask')" danger>Clear Reference Mask</a-button>
+      </a-space>
+
+      <a-divider />
+      <a-button @click="latentVisible = !latentVisible">
+        {{ latentVisible ? 'Hide' : 'Show' }} Latent Mask
+      </a-button>
+      <div v-show="latentVisible">
+        <div>
+          <div
+            :style="{ 'height': '512px', 'width': '512px', 'background-color': 'black', position: 'absolute', top: 0, left: 0 }">
+          </div>
+          <a-image :style="{ position: 'absolute', top: 0, left: 0 }" :src="conditionURL.toString()" alt="avatar"
+            :width="512" :height="512" :preview="false" />
+          <div :style="{ position: 'absolute', top: 0, left: 0, opacity: 0.8 }">
+            <canvas ref="latentDrawingCanvas" :width="512" :height="512"
+              @mousedown="startDrawingOnMaskCanvas($event, 'latent')" @mousemove="drawOnMaskCanvas($event, 'latent')"
+              @mouseup="stopDrawingMaskOnCanvas('latent')" @mouseleave="stopDrawingMaskOnCanvas('latent')"></canvas>
+          </div>
+        </div>
+
+        <a-space>
+          <a-button @click="clearDrawingCanvas('latent')" danger>Clear Latent Mask</a-button>
+        </a-space>
+      </div>
+      <a-divider />
+      <a-divider orientation="left" orientation-margin="0px"> 2nd Reference Image </a-divider>
+      <a-button @click="reference2Visible = !reference2Visible">
+        {{ reference2Visible ? 'Hide' : 'Show' }} 2nd Reference Image
+      </a-button>
+
+      <div v-show="reference2Visible">
+        <a-divider />
+        <a-upload list-type="picture" accept="image/*" :beforeUpload="file => handleUpdateRef(file, 2)"
+          :show-upload-list="false">
+          <a-button>
+            <upload-outlined></upload-outlined>
+            Upload 2nd Reference
+          </a-button>
+        </a-upload>
+
+        <div>
+          <div
+            :style="{ 'height': '512px', 'width': '512px', 'background-color': 'black', position: 'absolute', top: 0, left: 0 }">
+          </div>
+          <a-image :style="{ position: 'absolute', top: 0, left: 0 }" :src="referenceURL2.toString()" alt="avatar"
+            :width="512" :height="512" :preview="false" />
+          <div :style="{ position: 'absolute', top: 0, left: 0, opacity: 0.8 }">
+            <canvas ref="maskDrawingCanvas2" :width="512" :height="512"
+              @mousedown="startDrawingOnMaskCanvas($event, 'mask2')" @mousemove="drawOnMaskCanvas($event, 'mask2')"
+              @mouseup="stopDrawingMaskOnCanvas('mask2')" @mouseleave="stopDrawingMaskOnCanvas('mask2')"></canvas>
+          </div>
+        </div>
+        <a-space>
+          <a-button @click="clearDrawingCanvas('mask2')" danger>Clear Reference Mask</a-button>
+        </a-space>
+        <a-divider />
+
+        <div>
+          <div
+            :style="{ 'height': '512px', 'width': '512px', 'background-color': 'black', position: 'absolute', top: 0, left: 0 }">
+          </div>
+          <a-image :style="{ position: 'absolute', top: 0, left: 0 }" :src="conditionURL.toString()" alt="avatar"
+            :width="512" :height="512" :preview="false" />
+          <div :style="{ position: 'absolute', top: 0, left: 0, opacity: 0.8 }">
+            <canvas ref="latentDrawingCanvas2" :width="512" :height="512"
+              @mousedown="startDrawingOnMaskCanvas($event, 'latent2')" @mousemove="drawOnMaskCanvas($event, 'latent2')"
+              @mouseup="stopDrawingMaskOnCanvas('latent2')" @mouseleave="stopDrawingMaskOnCanvas('latent2')"></canvas>
+          </div>
+        </div>
+
+        <a-space>
+          <a-button @click="clearDrawingCanvas('latent2')" danger>Clear Latent Mask</a-button>
+        </a-space>
+        
+        <a-divider />
+      </div>
+
       <a-divider orientation="left" orientation-margin="0px">
         {{ $t('ui.canvas') }}
       </a-divider>
@@ -1223,44 +1484,7 @@ export default defineComponent({
           <a-button @click="resetZoom()">{{ $t('ui.resetZoom') }}</a-button>
         </a-space>
       </div>
-      <a-divider orientation="left" orientation-margin="0px">
-        Reference Image
-      </a-divider>
-      <a-upload list-type="picture" accept="image/*" :beforeUpload="handleUpdateRef" :show-upload-list="false">
-        <a-button>
-          <upload-outlined></upload-outlined>
-          Upload Reference
-        </a-button>
-      </a-upload>
 
-      <div>
-        <div
-          :style="{ 'height': '512px', 'width': '512px', 'background-color': 'black', position: 'absolute', top: 0, left: 0 }">
-        </div>
-        <a-image :style="{ position: 'absolute', top: 0, left: 0 }" :src="referenceURL.toString()" alt="avatar"
-          :width="512" :height="512" :preview="false" />
-        <div
-          :style="{ display: canvasVisible ? 'block' : 'none', position: 'absolute', top: 0, left: 0, opacity: 0.8 }">
-          <div
-            :style="{ 'height': '512px', 'width': '512px', 'background-color': 'black', position: 'absolute', top: 0, left: 0 }">
-          </div>
-          <canvas ref="drawingCanvas" :width="512" :height="512" @mousedown="startDrawingOnCanvas"
-            @mousemove="drawOnCanvas" @mouseup="stopDrawingOnCanvas" @mouseleave="stopDrawingOnCanvas"></canvas>
-        </div>
-      </div>
-      <a-space>
-        <a-button @click="toggleCanvasVisibility">{{ canvasVisible ? 'Hide' : 'Show' }} Mask</a-button>
-        <a-button @click="clearDrawingCanvas">Clear Mask</a-button>
-      </a-space>
-      <a-divider orientation="left" orientation-margin="0px">
-        Output
-      </a-divider>
-      <a-space>
-        <a-button @click="downloadCanvasAsImage" type="primary" size="large">
-          <download-outlined></download-outlined>
-          Generate
-        </a-button>
-      </a-space>
       <a-divider orientation="left" orientation-margin="0px">
         {{ $t('ui.poseControl') }}
       </a-divider>
@@ -1320,6 +1544,7 @@ export default defineComponent({
           </template>
         </OpenposeObjectPanel>
       </a-collapse>
+
 
       <a-divider orientation="left" orientation-margin="0px">
         Advance Settings
