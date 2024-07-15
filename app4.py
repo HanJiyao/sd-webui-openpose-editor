@@ -1,7 +1,6 @@
 import os
 import argparse
 import numpy as np
-os.environ["CUDA_VISIBLE_DEVICES"]="5"
 import torch
 from diffusers import (DDIMScheduler,AutoencoderKL, ControlNetModel,UNet2DConditionModel,StableDiffusionInpaintPipelineLegacy,
                        StableDiffusionControlNetPipeline,StableDiffusionControlNetInpaintPipeline,StableDiffusionPipeline)
@@ -47,7 +46,7 @@ def test(bmodelpath, fmodelpath,tokennumbers, stepnum, seednum, pos, neg,width,h
     args.num_inference_steps = stepnum
     args.seed = seednum
     args.pretrained_model_name_or_path = bmodelpath
-    args.adapter_path_if_ignore[0] = "/home/yixuan/projects/comictitan/workspace/models/"+fmodelpath
+    args.adapter_path_if_ignore[0] = "models/"+fmodelpath
     args.img_p_scale = float(scale1)
     args.ctrl_scale = float(scale2)
     args.txt_p_scale = float(scale3)
@@ -340,7 +339,7 @@ def parse_args():
     parser.add_argument("--width",type=int,default=512,required=False,)
     parser.add_argument(
         "--adapter_path_if_ignore",
-        default=["/workspace/Amiadapter-main/comic/models/checkpoint-90000.safetensors",True]
+        default=["models/final_60000.safetensors",True]
     )
     # parser.add_argument("--pos_prompt", type=str, default="a photo of a girl on the beach",)
     # parser.add_argument("--pos_prompt", type=str, default="a photo of a girl on the beach, wedding outfit",)
@@ -382,7 +381,7 @@ def main():
                         # cXXX-aug-82000 is finetuned on cXXX-45000(un-augmented data), with augmented data, 4*lambda GPU, 4 samples/GPU/step, about 67/9*8.2 hours totally
                         # cXXX-detail-85000 project image features into 1025 tokens, rather than 257, 4*lambda GPU, 4 samples/GPU/step, about ... hours totally
                         c_fmodelpath = gr.Dropdown(["checkpoint-unaug-90000.safetensors", "checkpoint-aug-82000.safetensors",
-                                                            "checkpoint-detail-85000.safetensors"], label="Finetuned Model", info="Please select finetuned model", value="checkpoint-unaug-90000.safetensors")
+                                                            "checkpoint-detail-85000.safetensors", "final_60000.safetensors"], label="Finetuned Model", info="Please select finetuned model", value="final_60000.safetensors")
                         c_tokennumbers=gr.Dropdown([257,1025], label="Number of Tokens", info="Please select num of tokens", value=257)
                     with gr.Row():
                         c_stepnum = gr.Number(label="Steps", value=args.num_inference_steps, minimum=0, maximum=100)

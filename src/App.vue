@@ -35,6 +35,8 @@ interface AppData {
   img_p_scale: number;
   ctrl_scale: number;
   cfg: number;
+  rembg: boolean;
+  use_inpaint: boolean;
 
   imageURL: string;
   personName: string;
@@ -375,6 +377,8 @@ export default defineComponent({
       ctrl_scale: 0.8,
       cfg: 5,
       seed: 42,
+      rembg: false,
+      use_inpaint: false,
 
       imageURL: '',
       personName: '',
@@ -906,6 +910,17 @@ export default defineComponent({
       }
       this.activeBodyPart = activeBodyPart;
     },
+    reloadModel() {
+      fetch("http://localhost:7860/api/reload", {
+        method: "POST",
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          data: [this.use_inpaint]
+        })
+      })
+    },
     resetZoom() {
       if (!this.canvas) return;
       this.canvas.setViewportTransform(IDENTITY_MATRIX);
@@ -1303,6 +1318,7 @@ export default defineComponent({
                 this.img_p_scale,
                 this.ctrl_scale,
                 this.cfg,
+                this.rembg,
                 croppedImageUrl,
                 this.referenceURL,
                 this.maskURL,
@@ -1465,7 +1481,7 @@ export default defineComponent({
         <a-space>
           <a-button @click="clearDrawingCanvas('latent2')" danger>Clear Latent Mask</a-button>
         </a-space>
-        
+
         <a-divider />
       </div>
 
@@ -1570,6 +1586,15 @@ export default defineComponent({
         </a-form-item>
         <a-form-item label="CFG">
           <a-input v-model:value="cfg" />
+        </a-form-item>
+        <a-form-item>
+          <a-checkbox v-model:checked="rembg">Remove Background</a-checkbox>
+        </a-form-item>
+        <a-form-item>
+          <a-checkbox v-model:checked="use_inpaint">Use Inpaint</a-checkbox>
+        </a-form-item>
+        <a-form-item>
+          <a-button @click="reloadModel()"> Reload </a-button>
         </a-form-item>
       </a-space>
     </a-col>

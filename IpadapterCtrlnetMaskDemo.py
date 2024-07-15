@@ -4,7 +4,7 @@ os.environ["USE_FLASH_ATTENTION"] = "0"
 import argparse
 import numpy as np
 import torch
-from diffusers import DDIMScheduler, AutoencoderKL, ControlNetModel, UNet2DConditionModel, StableDiffusionControlNetPipeline, TCDScheduler
+from diffusers import AutoencoderKL, ControlNetModel, UNet2DConditionModel, StableDiffusionControlNetPipeline, StableDiffusionControlNetInpaintPipeline, TCDScheduler
 from transformers import CLIPTextModel, CLIPTokenizer
 from PIL import Image
 from ip_adapter.ip_adapter_ctrlnet_inference_4 import IPAdapter_Ctrlnet_inference
@@ -15,6 +15,7 @@ import cv2
 from huggingface_hub import hf_hub_download
 import base64
 from io import BytesIO
+from rembg import remove
 
 
 def parse_args():
@@ -36,15 +37,20 @@ def parse_args():
     )
     parser.add_argument("--img_prompt_mask",default={"1_body": []})
     parser.add_argument("--img_prompt_mask_scale",default={"0_global":1,"1_body":1})# first value for whole, second value for mask
+    parser.add_argument("--use_inpaint", type=bool, default=False, required=False)
+    parser.add_argument("--rembg", type=bool, default=False, required=False)
     args = parser.parse_args()
     return args
 
 pipe = None
 ip_model = None
 
-def preload():
-    global pipe, ip_model
+def preload(use_inpaint):
+    print("load with inpaint: ", use_inpaint)
+    global pipe, ip_model, args
     torch.cuda.empty_cache()
+    pipe = None
+    ip_model = None
     
     # noise_scheduler = DDIMScheduler(
     #     num_train_timesteps=1000,
@@ -63,19 +69,34 @@ def preload():
     
     # load controlnet
     controlnet = ControlNetModel.from_pretrained(args.controlnet_path, torch_dtype=torch.float16)
-        
-    pipe = StableDiffusionControlNetPipeline.from_pretrained(
-        args.pretrained_model_name_or_path,
-        controlnet=controlnet,
-        torch_dtype=torch.float16,
-        scheduler=noise_scheduler,
-        unet=unet,
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
-        vae=vae,
-        feature_extractor=None,
-        safety_checker=None,
-    ).to(dtype=torch.float16)
+    
+    args.use_inpaint = use_inpaint
+    if use_inpaint:
+        pipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(
+            args.pretrained_model_name_or_path,
+            controlnet=controlnet,
+            torch_dtype=torch.float16,
+            scheduler=noise_scheduler,
+            unet=unet,
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+            vae=vae,
+            feature_extractor=None,
+            safety_checker=None,
+        ).to(dtype=torch.float16)
+    else:
+        pipe = StableDiffusionControlNetPipeline.from_pretrained(
+            args.pretrained_model_name_or_path,
+            controlnet=controlnet,
+            torch_dtype=torch.float16,
+            scheduler=noise_scheduler,
+            unet=unet,
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+            vae=vae,
+            feature_extractor=None,
+            safety_checker=None,
+        ).to(dtype=torch.float16)
     
     pipe.load_lora_weights(hf_hub_download("ByteDance/Hyper-SD", "Hyper-SD15-12steps-CFG-lora.safetensors"))
     
@@ -187,6 +208,7 @@ def test(
         img_p_scale, 
         ctrl_scale, 
         txt_p_scale, 
+        rembg,
         imginput,
         latentmask,
         apply_ref2,
@@ -199,15 +221,17 @@ def test(
     
     global pipe, ip_model
     if pipe == None:
-        preload()
+        preload(args.use_inpaint)
     
     args.num_inference_steps = stepnum
     args.seed = seednum
     args.img_p_scale = float(img_p_scale)
     args.ctrl_scale = float(ctrl_scale)
     args.txt_p_scale = float(txt_p_scale)
+    
     args.height = height
     args.width = width
+    args.rembg = rembg
     
     condition_image = Image.fromarray(latentmask["background"][:, :, 0:3])
     processed_control_condition = condition_image.resize((args.height, args.width))
@@ -232,7 +256,16 @@ def test(
     if len(img_prompt_attn_masks)==1:
         img_prompt_attn_masks=img_prompt_attn_masks[0]
 
-    ip_model.image=processed_control_condition
+    if args.use_inpaint:
+        ip_model.strength = 1
+        bg_image = Image.fromarray(imginput["background"][:,:,:3]).resize((args.height,args.width)).convert("RGB")
+        ip_model.image = bg_image
+        mask_image=Image.fromarray(latentmask["layers"][0][:, :, 3]).resize((args.height,args.width)).convert("RGB")
+        ip_model.mask_image = mask_image
+        ip_model.control_image = processed_control_condition
+    else:
+        ip_model.image=processed_control_condition
+    
     ip_model.controlnet_conditioning_scale=args.ctrl_scale
 
     images = ip_model.generate(
@@ -249,7 +282,10 @@ def test(
         height=args.height, 
         width=args.width)
 
-    return images[0]
+    if args.rembg:
+        return remove(images[0])
+    else:
+        return images[0]
 
 def base64_to_image(base64_str):
     if "base64" in base64_str:
@@ -351,6 +387,7 @@ def generate(
         img_p_scale, 
         ctrl_scale, 
         txt_p_scale, 
+        rembg,
         
         condition_base64,
         
@@ -365,13 +402,14 @@ def generate(
     
     global pipe, ip_model
     if pipe == None:
-        preload()
+        preload(args.use_inpaint)
         
     args.num_inference_steps = stepnum
     args.seed = seednum
     args.img_p_scale = float(img_p_scale)
     args.ctrl_scale = float(ctrl_scale)
     args.txt_p_scale = float(txt_p_scale)
+    
     args.height = height
     args.width = width
     
@@ -394,8 +432,16 @@ def generate(
     if len(img_prompt_attn_masks)==1:
         img_prompt_attn_masks=img_prompt_attn_masks[0]
 
-
-    ip_model.image=processed_control_condition
+    if args.use_inpaint:
+        ip_model.strength = 1
+        bg_image = Image.fromarray(base64_to_image(ref_base64)).resize((args.height,args.width)).convert("RGB")
+        ip_model.image = bg_image
+        mask_image=Image.fromarray(base64_to_image(condition_mask_base64)).resize((args.height,args.width)).convert("RGB")
+        ip_model.mask_image = mask_image
+        ip_model.control_image = processed_control_condition
+    else:
+        ip_model.image=processed_control_condition
+    
     ip_model.controlnet_conditioning_scale=args.ctrl_scale
 
     images = ip_model.generate(
@@ -412,7 +458,10 @@ def generate(
         height=args.height, 
         width=args.width)
 
-    return images[0]
+    if rembg:
+        return remove(images[0])
+    else:
+        return images[0]
 
 def toggle_visibility(apply_ref):
     return gr.update(visible=apply_ref)
@@ -439,6 +488,12 @@ def main():
                         img_p_scale = gr.Slider(label="img_p_scale", value=args.img_p_scale, minimum=0.0, maximum=1.0)
                         ctrl_scale = gr.Slider(label="ctrl_scale", value=args.ctrl_scale, minimum=0.0, maximum=1.0)
                         txt_p_scale = gr.Slider(label="txt_p_scale", value=args.txt_p_scale, minimum=0.0, maximum=10.0)
+                    with gr.Row():
+                        c_reload = gr.Button("Reload")
+                        rembg = gr.Checkbox(label="Remove Background", value=args.rembg)
+                        c_use_inpaint = gr.Checkbox(label="Use Inpaint", value=args.use_inpaint)
+                        c_reload.click(fn=preload, inputs=[c_use_inpaint], api_name="reload")
+                        
                     condition_img = gr.Image(label="Condition Image", type="pil")
                 
                 with gr.Group():
@@ -477,6 +532,7 @@ def main():
             img_p_scale, 
             ctrl_scale, 
             txt_p_scale,
+            rembg,
             imginput,
             latentmask,
             apply_ref2,
@@ -510,6 +566,7 @@ def main():
                 img_p_scale, 
                 ctrl_scale, 
                 txt_p_scale,
+                rembg,
                 
                 condition_base64,
                 
