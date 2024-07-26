@@ -4,7 +4,7 @@ import torch
 from PIL import Image
 from safetensors import safe_open
 from transformers import CLIPImageProcessor, CLIPVisionModel
-from .attention_processor_modify_2 import AttnProcessor, IPAttnProcessor,AttnProcessorCross
+from .attention_processor_modify_2 import AttnProcessor, IPAttnProcessor, AttnProcessorCross
 import numpy as np
 
 class modified_ImageProjModel(torch.nn.Module):
@@ -467,7 +467,7 @@ class IPAdapter_Ctrlnet_inference:
         else:
             self.set_img_prompt_attn_mask(
                 img_prompt_attn_mask.permute(1, 0).reshape(-1, height // 8, width // 8))
-
+        
         images = self.pipe(
             prompt_embeds=prompt_embeds,  # (2,77+num_tokens,768)
             height=height,

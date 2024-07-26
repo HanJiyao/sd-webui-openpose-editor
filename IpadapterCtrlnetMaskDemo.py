@@ -4,7 +4,7 @@ os.environ["USE_FLASH_ATTENTION"] = "0"
 import argparse
 import numpy as np
 import torch
-from diffusers import AutoencoderKL, ControlNetModel, UNet2DConditionModel, StableDiffusionControlNetPipeline, StableDiffusionControlNetInpaintPipeline, TCDScheduler
+from diffusers import AutoencoderKL, ControlNetModel, UNet2DConditionModel, StableDiffusionControlNetPipeline, StableDiffusionControlNetInpaintPipeline, TCDScheduler, AutoPipelineForImage2Image
 from transformers import CLIPTextModel, CLIPTokenizer
 from PIL import Image
 from ip_adapter.ip_adapter_ctrlnet_inference_4 import IPAdapter_Ctrlnet_inference
@@ -16,6 +16,7 @@ from huggingface_hub import hf_hub_download
 import base64
 from io import BytesIO
 from rembg import remove
+import requests
 
 
 def parse_args():
@@ -28,6 +29,7 @@ def parse_args():
     parser.add_argument("--img_p_scale",type=float,default=0.7,required=False)
     parser.add_argument("--ctrl_scale",type=float,default=0.8,required=False)
     parser.add_argument("--txt_p_scale",type=float,default=5,required=False)
+    parser.add_argument("--img2img_strength",type=float,default=0.5,required=False)
     parser.add_argument("--seed",type=int,default=42,required=False)
     parser.add_argument("--height",type=int,default=512,required=False)
     parser.add_argument("--width",type=int,default=512,required=False)
@@ -39,6 +41,7 @@ def parse_args():
     parser.add_argument("--img_prompt_mask_scale",default={"0_global":1,"1_body":1})# first value for whole, second value for mask
     parser.add_argument("--use_inpaint", type=bool, default=False, required=False)
     parser.add_argument("--rembg", type=bool, default=False, required=False)
+    parser.add_argument("--use_background", type=bool, default=False, required=False)
     args = parser.parse_args()
     return args
 
@@ -85,7 +88,20 @@ def preload(use_inpaint):
             safety_checker=None,
         ).to(dtype=torch.float16)
     else:
-        pipe = StableDiffusionControlNetPipeline.from_pretrained(
+        # pipe = StableDiffusionControlNetPipeline.from_pretrained(
+        #     args.pretrained_model_name_or_path,
+        #     controlnet=controlnet,
+        #     torch_dtype=torch.float16,
+        #     scheduler=noise_scheduler,
+        #     unet=unet,
+        #     tokenizer=tokenizer,
+        #     text_encoder=text_encoder,
+        #     vae=vae,
+        #     feature_extractor=None,
+        #     safety_checker=None,
+        # ).to(dtype=torch.float16)
+        
+        pipe = AutoPipelineForImage2Image.from_pretrained(
             args.pretrained_model_name_or_path,
             controlnet=controlnet,
             torch_dtype=torch.float16,
@@ -97,6 +113,7 @@ def preload(use_inpaint):
             feature_extractor=None,
             safety_checker=None,
         ).to(dtype=torch.float16)
+
     
     pipe.load_lora_weights(hf_hub_download("ByteDance/Hyper-SD", "Hyper-SD15-12steps-CFG-lora.safetensors"))
     
@@ -217,6 +234,7 @@ def test(
         apply_ref3,
         imginput3,
         latentmask3,
+        use_background
     ):
     
     global pipe, ip_model
@@ -232,6 +250,7 @@ def test(
     args.height = height
     args.width = width
     args.rembg = rembg
+    args.use_background = use_background
     
     condition_image = Image.fromarray(latentmask["background"][:, :, 0:3])
     processed_control_condition = condition_image.resize((args.height, args.width))
@@ -264,7 +283,10 @@ def test(
         ip_model.mask_image = mask_image
         ip_model.control_image = processed_control_condition
     else:
-        ip_model.image=processed_control_condition
+        ip_model.strength = 1
+        bg_image = Image.fromarray(imginput["background"][:,:,:3]).resize((args.height,args.width)).convert("RGB")
+        ip_model.image = bg_image
+        ip_model.control_image=processed_control_condition
     
     ip_model.controlnet_conditioning_scale=args.ctrl_scale
 
@@ -282,10 +304,29 @@ def test(
         height=args.height, 
         width=args.width)
 
+    output_image = images[0]
+    
     if args.rembg:
-        return remove(images[0])
-    else:
-        return images[0]
+        output_image = remove(output_image)
+    
+    if args.use_background:
+        url = 'http://localhost:8080/api/v1/inpaint'
+        bg_image = Image.fromarray(imginput["background"][:,:,:3]).resize((args.height,args.width)).convert("RGB")
+        buffered = BytesIO()
+        bg_image.save(buffered, format="PNG")
+        bg_image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        mask_image=Image.fromarray(imginput["layers"][0][:, :, 3]).resize((args.height,args.width)).convert("RGB")
+        buffered = BytesIO()
+        mask_image.save(buffered, format="PNG")
+        mask_image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        res = requests.post(url, json = {"image": bg_image_base64, "mask": mask_image_base64})
+        final_background_image = Image.open(BytesIO(res.content))
+        
+        overlay_image = remove(output_image)
+        final_background_image.paste(overlay_image, (0, 0), overlay_image)
+        output_image = final_background_image
+        
+    return output_image
 
 def base64_to_image(base64_str):
     if "base64" in base64_str:
@@ -387,6 +428,8 @@ def generate(
         img_p_scale, 
         ctrl_scale, 
         txt_p_scale, 
+        img2img_strength,
+        
         rembg,
         
         condition_base64,
@@ -397,7 +440,9 @@ def generate(
         
         ref2_base64,
         ref2_mask_base64,
-        condition2_mask_base64
+        condition2_mask_base64,
+        
+        use_background
     ):
     
     global pipe, ip_model
@@ -409,9 +454,12 @@ def generate(
     args.img_p_scale = float(img_p_scale)
     args.ctrl_scale = float(ctrl_scale)
     args.txt_p_scale = float(txt_p_scale)
+    args.img2img_strength = float(img2img_strength)
     
     args.height = height
     args.width = width
+    args.rembg = rembg
+    args.use_background = use_background
     
     condition_image = Image.fromarray(base64_to_image(condition_base64))
     processed_control_condition = condition_image.resize((height, width))
@@ -440,7 +488,11 @@ def generate(
         ip_model.mask_image = mask_image
         ip_model.control_image = processed_control_condition
     else:
-        ip_model.image=processed_control_condition
+        ip_model.strength = args.img2img_strength
+        bg_image = Image.fromarray(base64_to_image(ref_base64)).resize((args.height,args.width)).convert("RGB")
+        ip_model.image = bg_image
+        ip_model.control_image=processed_control_condition
+    
     
     ip_model.controlnet_conditioning_scale=args.ctrl_scale
 
@@ -458,10 +510,21 @@ def generate(
         height=args.height, 
         width=args.width)
 
-    if rembg:
-        return remove(images[0])
-    else:
-        return images[0]
+    output_image = images[0]
+    
+    if args.rembg:
+        output_image = remove(output_image)
+    
+    if args.use_background:
+        url = 'http://localhost:8080/api/v1/inpaint'
+        res = requests.post(url, json = {"image": ref_base64, "mask": ref_mask_base64})
+        final_background_image = Image.open(BytesIO(res.content))
+        
+        overlay_image = remove(output_image)
+        final_background_image.paste(overlay_image, (0, 0), overlay_image)
+        output_image = final_background_image
+        
+    return output_image
 
 def toggle_visibility(apply_ref):
     return gr.update(visible=apply_ref)
@@ -487,32 +550,35 @@ def main():
                     with gr.Row():
                         img_p_scale = gr.Slider(label="img_p_scale", value=args.img_p_scale, minimum=0.0, maximum=1.0)
                         ctrl_scale = gr.Slider(label="ctrl_scale", value=args.ctrl_scale, minimum=0.0, maximum=1.0)
+                    with gr.Row():
                         txt_p_scale = gr.Slider(label="txt_p_scale", value=args.txt_p_scale, minimum=0.0, maximum=10.0)
+                        c_img2img_strength = gr.Slider(label="Image to Image Strength", value=args.img2img_strength, minimum=0.1, maximum=1.0)
                     with gr.Row():
                         c_reload = gr.Button("Reload")
                         rembg = gr.Checkbox(label="Remove Background", value=args.rembg)
                         c_use_inpaint = gr.Checkbox(label="Use Inpaint", value=args.use_inpaint)
+                        c_use_background = gr.Checkbox(label="Keep Background", value = args.use_background)
                         c_reload.click(fn=preload, inputs=[c_use_inpaint], api_name="reload")
                         
                     condition_img = gr.Image(label="Condition Image", type="pil")
                 
                 with gr.Group():
                     with gr.Row():
-                        imginput = gr.ImageMask(label="Reference img", brush=Brush(colors=["#FFFFFF"]))
-                        latentmask = gr.ImageMask(label="Latent mask", brush=Brush(colors=["#FFFFFF"]))
+                        imginput = gr.ImageMask(label="Reference img", brush=Brush(colors=["rgba(255, 255, 0, 0.5)"]))
+                        latentmask = gr.ImageMask(label="Latent mask", brush=Brush(colors=["rgba(255, 255, 0, 0.5)"]))
                         
                 with gr.Group():
                     apply_ref2 = gr.Checkbox(label="Apply 2nd Ref", value=False) 
                     with gr.Row(visible=False) as ref2_block:
-                        imginput2 = gr.ImageMask(label="Reference img", brush=Brush(colors=["#FFFFFF"]))
-                        latentmask2 = gr.ImageMask(label="Latent mask", brush=Brush(colors=["#FFFFFF"]))
+                        imginput2 = gr.ImageMask(label="Reference img", brush=Brush(colors=["rgba(255, 255, 0, 0.5)"]))
+                        latentmask2 = gr.ImageMask(label="Latent mask", brush=Brush(colors=["rgba(255, 255, 0, 0.5)"]))
                 apply_ref2.change(fn=toggle_visibility, inputs=apply_ref2, outputs=ref2_block)
                 
                 with gr.Group():
                     apply_ref3 = gr.Checkbox(label="Apply 3rd Ref", value=False)
                     with gr.Row(visible=False) as ref3_block:
-                        imginput3 = gr.ImageMask(label="Reference img", brush=Brush(colors=["#FFFFFF"]))
-                        latentmask3 = gr.ImageMask(label="Latent mask", brush=Brush(colors=["#FFFFFF"]))
+                        imginput3 = gr.ImageMask(label="Reference img", brush=Brush(colors=["rgba(255, 255, 0, 0.5)"]))
+                        latentmask3 = gr.ImageMask(label="Latent mask", brush=Brush(colors=["rgba(255, 255, 0, 0.5)"]))
                     apply_ref3.change(fn=toggle_visibility, inputs=apply_ref3, outputs=ref3_block)
                 
                 condition_img.change(fn=update_latent_masks, inputs=condition_img, outputs=[latentmask, latentmask2, latentmask3])
@@ -541,6 +607,7 @@ def main():
             apply_ref3,
             imginput3,
             latentmask3,
+            c_use_background
         ]
         outputs = [out]
         
@@ -566,6 +633,8 @@ def main():
                 img_p_scale, 
                 ctrl_scale, 
                 txt_p_scale,
+                c_img2img_strength,
+                
                 rembg,
                 
                 condition_base64,
@@ -577,13 +646,15 @@ def main():
                 ref2_base64,
                 ref2_mask_base64,
                 condition2_mask_base64,
+                
+                c_use_background
             ]
             
             apiBtn = gr.Button(value="API")
             apiBtn.click(generate, inputs=generate_inputs, outputs=outputs, api_name="generate")
     
     demo.queue(max_size=1)
-    demo.launch(share=True, server_port=7860)
+    demo.launch(server_port=7860)
 
 if __name__ == '__main__':
     main()

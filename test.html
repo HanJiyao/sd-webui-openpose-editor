@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport"/>
+    <title>Fabric.js Canvas</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.2.4/fabric.min.js"></script>
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        const canvasElement = document.createElement('canvas')
+        document.body.appendChild(canvasElement)
+
+        const canvas = new fabric.Canvas(canvasElement)
+        resizeCanvas()
+
+        // Add the locked rectangle in the center
+        const rect = new fabric.Rect({
+          left: (canvas.width - 512) / 2,
+          top: (canvas.height - 512) / 2,
+          fill: 'black',
+          width: 512,
+          height: 512,
+          selectable: false,
+          evented: false
+        })
+
+        canvas.add(rect)
+
+        // Keypoints to add on the black rectangle
+        const default_body_keypoints = [
+          [241, 77],
+          [241, 120],
+          [191, 118],
+          [177, 183],
+          [163, 252],
+          [298, 118],
+          [317, 182],
+          [332, 245],
+          [225, 241],
+          [213, 359],
+          [215, 454],
+          [270, 240],
+          [282, 360],
+          [286, 456],
+          [232, 59],
+          [253, 60],
+          [225, 70],
+          [260, 72]
+        ].map((loc) => [loc[0], loc[1], 1.0])
+
+        const keypoints_connections = [
+          [0, 1],
+          [1, 2],
+          [2, 3],
+          [3, 4],
+          [1, 5],
+          [5, 6],
+          [6, 7],
+          [1, 8],
+          [8, 9],
+          [9, 10],
+          [1, 11],
+          [11, 12],
+          [12, 13],
+          [0, 14],
+          [14, 16],
+          [0, 15],
+          [15, 17]
+        ]
+
+        const colors = [
+          [255, 0, 0],
+          [255, 85, 0],
+          [255, 170, 0],
+          [255, 255, 0],
+          [170, 255, 0],
+          [85, 255, 0],
+          [0, 255, 0],
+          [0, 255, 85],
+          [0, 255, 170],
+          [0, 255, 255],
+          [0, 170, 255],
+          [0, 85, 255],
+          [0, 0, 255],
+          [85, 0, 255],
+          [170, 0, 255],
+          [255, 0, 255],
+          [255, 0, 170],
+          [255, 0, 85]
+        ]
+
+        const rectLeft = (canvas.width - 512) / 2
+        const rectTop = (canvas.height - 512) / 2
+
+        const circles = default_body_keypoints.map((point, index) => {
+          const circle = new fabric.Circle({
+            left: rectLeft + point[0] - 8, // Adjusted for new radius
+            top: rectTop + point[1] - 8, // Adjusted for new radius
+            radius: 8, // New radius
+            fill: `rgb(${colors[index][0]}, ${colors[index][1]}, ${colors[index][2]})`,
+            selectable: true,
+            evented: true,
+            hasControls: false
+          })
+          canvas.add(circle)
+          return circle
+        })
+
+        const lines = keypoints_connections.map((connection) => {
+          const color = colors[connection[1]]
+          const line = new fabric.Line(
+            [
+              circles[connection[0]].left + 8,
+              circles[connection[0]].top + 8,
+              circles[connection[1]].left + 8,
+              circles[connection[1]].top + 8
+            ],
+            {
+              stroke: `rgb(${color[0]}, ${color[1]}, ${color[2]})`,
+              strokeWidth: 5, // Adjust line thickness if needed
+              selectable: false,
+              evented: false
+            }
+          )
+          canvas.add(line)
+          return line
+        })
+
+        // Utility function to get absolute position of a circle
+        function getAbsPoint(circle) {
+          if (circle.group) {
+            const transformMatrix = circle.group.calcTransformMatrix()
+            return fabric.util.transformPoint(new fabric.Point(circle.left, circle.top), transformMatrix)
+          } else {
+            return new fabric.Point(circle.left, circle.top)
+          }
+        }
+
+        let isUpdatingLines = false
+
+        function updateLines() {
+          if (isUpdatingLines) return
+          isUpdatingLines = true
+
+          lines.forEach((line, index) => {
+            const connection = keypoints_connections[index]
+            const point1 = getAbsPoint(circles[connection[0]])
+            const point2 = getAbsPoint(circles[connection[1]])
+            line.set({
+              x1: point1.x + circles[connection[0]].radius,
+              y1: point1.y + circles[connection[0]].radius,
+              x2: point2.x + circles[connection[1]].radius,
+              y2: point2.y + circles[connection[1]].radius
+            })
+          })
+          canvas.renderAll()
+
+          isUpdatingLines = false
+        }
+
+        canvas.on('object:moving', updateLines)
+        canvas.on('object:scaling', updateLines)
+        canvas.on('object:rotating', updateLines)
+
+        function resizeCanvas() {
+          canvas.setWidth(window.innerWidth)
+          canvas.setHeight(window.innerHeight)
+          canvas.renderAll()
+        }
+
+        window.addEventListener('resize', resizeCanvas)
+      })
+    </script>
+  </body>
+</html>

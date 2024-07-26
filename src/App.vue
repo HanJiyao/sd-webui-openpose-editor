@@ -37,6 +37,7 @@ interface AppData {
   cfg: number;
   rembg: boolean;
   use_inpaint: boolean;
+  use_background: boolean;
 
   imageURL: string;
   personName: string;
@@ -67,7 +68,7 @@ interface AppData {
   latentContext: CanvasRenderingContext2D | null;
   latentDrawingCanvas: HTMLCanvasElement | null;
   latentDrawing: boolean,
-  maskURL: string;
+  latentURL: string;
 
   reference2Visible: boolean
   referenceURL2: string;
@@ -83,6 +84,8 @@ interface AppData {
   latentDrawingCanvas2: HTMLCanvasElement | null;
   latentDrawing2: boolean,
   latentURL2: string;
+
+  img2imgStrengh: number;
 }
 
 /**
@@ -370,15 +373,17 @@ export default defineComponent({
       canvasWidth: 512,
       conditionURL: '',
 
-      pos: "girl, beach, best quality, masterpiece",
+      pos: "best quality, masterpiece",
       neg: "ugly, monochrome",
-      num_inference_steps: 12,
+      num_inference_steps: 14,
       img_p_scale: 0.7,
       ctrl_scale: 0.8,
-      cfg: 5,
+      cfg: 7.5,
       seed: 42,
       rembg: false,
       use_inpaint: false,
+      use_background: true,
+      img2imgStrengh: 0.9,
 
       imageURL: '',
       personName: '',
@@ -398,7 +403,7 @@ export default defineComponent({
       activePersonId: undefined,
       activeBodyPart: undefined,
       modalId: undefined,
-      color: 'white',
+      color: 'yellow',
 
       referenceURL: '',
 
@@ -608,7 +613,6 @@ export default defineComponent({
   },
   methods: {
     startDrawingOnMaskCanvas(event: MouseEvent, target: String): void {
-      console.log(target)
       if (target == "mask") {
         this.maskDrawing = true;
         if (this.maskContext) {
@@ -884,11 +888,11 @@ export default defineComponent({
       if (!activePersonId) {
         // Collapse current panel.
         // If there is a body part panel expanded, collapse that as well.
-        const activePerson = this.people.get(parseInt(this.activePersonId!))!;
+        const activePerson = this.people.get(this.activePersonId!)!;
         this.updateActiveBodyPart(undefined, activePerson);
       }
 
-      this.activePersonId = activePersonId;
+      this.activePersonId = parseInt(activePersonId!);
     },
     updateActiveBodyPart(activeBodyPart: OpenposeBodyPart | undefined, person: OpenposePerson) {
       if (this.activeBodyPart === activeBodyPart) return;
@@ -911,7 +915,7 @@ export default defineComponent({
       this.activeBodyPart = activeBodyPart;
     },
     reloadModel() {
-      fetch("http://localhost:7860/api/reload", {
+      fetch("localhost:7860/api/reload", {
         method: "POST",
         headers: {
           'Content-Type': 'application/json'
@@ -964,7 +968,7 @@ export default defineComponent({
           img.onload = () => {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            ctx.globalAlpha = 0.8;
+            ctx!.globalAlpha = 0.8;
 
             if (!ctx) return;
 
@@ -1283,25 +1287,6 @@ export default defineComponent({
           const croppedImageUrl = newCanvas.toDataURL({ format: 'image/png' });
           this.conditionURL = croppedImageUrl
 
-          console.log([
-            this.num_inference_steps,
-            this.seed,
-            this.pos,
-            this.neg,
-            this.canvasWidth,
-            this.canvasHeight,
-            this.img_p_scale,
-            this.ctrl_scale,
-            this.cfg,
-            croppedImageUrl,
-            this.referenceURL,
-            this.maskURL,
-            this.latentURL,
-            this.referenceURL2,
-            this.maskURL2,
-            this.latentURL2
-          ])
-
           fetch("http://localhost:7860/api/generate", {
             method: "POST",
             headers: {
@@ -1318,6 +1303,7 @@ export default defineComponent({
                 this.img_p_scale,
                 this.ctrl_scale,
                 this.cfg,
+                this.img2imgStrengh,
                 this.rembg,
                 croppedImageUrl,
                 this.referenceURL,
@@ -1325,7 +1311,8 @@ export default defineComponent({
                 this.latentURL,
                 this.referenceURL2,
                 this.maskURL2,
-                this.latentURL2
+                this.latentURL2,
+                this.use_background
               ]
             })
           }).then(res => res.json())
@@ -1382,7 +1369,7 @@ export default defineComponent({
       <a-divider orientation="left" orientation-margin="0px">
         Reference Image
       </a-divider>
-      <a-upload list-type="picture" accept="image/*" :beforeUpload="file => handleUpdateRef(file, 1)"
+      <a-upload list-type="picture" accept="image/*" :beforeUpload="(file: Blob) => handleUpdateRef(file, 1)"
         :show-upload-list="false">
         <a-button>
           <upload-outlined></upload-outlined>
@@ -1440,7 +1427,7 @@ export default defineComponent({
 
       <div v-show="reference2Visible">
         <a-divider />
-        <a-upload list-type="picture" accept="image/*" :beforeUpload="file => handleUpdateRef(file, 2)"
+        <a-upload list-type="picture" accept="image/*" :beforeUpload="(file: Blob) => handleUpdateRef(file, 2)"
           :show-upload-list="false">
           <a-button>
             <upload-outlined></upload-outlined>
@@ -1587,11 +1574,17 @@ export default defineComponent({
         <a-form-item label="CFG">
           <a-input v-model:value="cfg" />
         </a-form-item>
+        <a-form-item label="Image to image strength">
+          <a-input v-model:value="img2imgStrengh" />
+        </a-form-item>
         <a-form-item>
           <a-checkbox v-model:checked="rembg">Remove Background</a-checkbox>
         </a-form-item>
         <a-form-item>
           <a-checkbox v-model:checked="use_inpaint">Use Inpaint</a-checkbox>
+        </a-form-item>
+        <a-form-item>
+          <a-checkbox v-model:checked="use_background">Keep Background</a-checkbox>
         </a-form-item>
         <a-form-item>
           <a-button @click="reloadModel()"> Reload </a-button>
