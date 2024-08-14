@@ -14,9 +14,33 @@
       canvas {
         display: block;
       }
+      #captureButton {
+          position: absolute;
+          top: 20px;
+          left: 50%;
+          transform: translateX(-50%);
+          height: 50px;
+          padding: 0 30px;
+          font-size: 16px;
+          font-weight: 600;
+          border-radius: 25px;
+          background-color: #007aff;
+          color: white;
+          border: none;
+          cursor: pointer;
+          transition: background-color 0.3s ease;
+          box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+        #captureButton:hover {
+          background-color: #005fcb;
+        }
+        #captureButton:active {
+          background-color: #004494;
+        }
     </style>
   </head>
   <body>
+    <button id="captureButton">Save Pose</button>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.2.4/fabric.min.js"></script>
     <script>
       document.addEventListener('DOMContentLoaded', () => {
@@ -175,6 +199,7 @@
         canvas.on('object:scaling', updateLines)
         canvas.on('object:rotating', updateLines)
 
+
         function resizeCanvas() {
           canvas.setWidth(window.innerWidth)
           canvas.setHeight(window.innerHeight)
@@ -182,6 +207,23 @@
         }
 
         window.addEventListener('resize', resizeCanvas)
+
+        // Initial resize and render
+        resizeCanvas()
+        canvas.renderAll();
+
+        const captureButton = document.getElementById('captureButton');
+        captureButton.addEventListener('click', captureCanvas);
+
+        function captureCanvas() {
+          const canvasElement = document.querySelector('canvas');
+          if (canvasElement) {
+            const dataURL = canvasElement.toDataURL('image/png');
+            console.log(dataURL)
+            window.webkit.messageHandlers.canvasImage.postMessage(dataURL);
+          }
+        }
+
       })
     </script>
   </body>
