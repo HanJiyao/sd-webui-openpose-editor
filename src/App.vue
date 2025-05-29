@@ -1286,35 +1286,56 @@ export default defineComponent({
           // Get the cropped image URL
           const croppedImageUrl = newCanvas.toDataURL({ format: 'image/png' });
           this.conditionURL = croppedImageUrl
-
-          fetch("http://localhost:7860/api/generate", {
+          console.log(JSON.stringify({
+            data: [
+              this.referenceURL,
+              this.referenceURL2,
+              20,
+              100,
+              512,
+              768,
+              3.5
+            ]
+          }))
+          fetch("http://61.16.108.27:7860/api/generate", {
             method: "POST",
             headers: {
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({
               data: [
-                this.num_inference_steps,
-                this.seed,
-                this.pos,
-                this.neg,
-                this.canvasWidth,
-                this.canvasHeight,
-                this.img_p_scale,
-                this.ctrl_scale,
-                this.cfg,
-                this.img2imgStrengh,
-                this.rembg,
-                croppedImageUrl,
                 this.referenceURL,
-                this.maskURL,
-                this.latentURL,
                 this.referenceURL2,
-                this.maskURL2,
-                this.latentURL2,
-                this.use_background
+                20,
+                100,
+                512,
+                768,
+                3.5
               ]
             })
+            // body: JSON.stringify({
+            //   data: [
+            //     this.num_inference_steps,
+            //     this.seed,
+            //     this.pos,
+            //     this.neg,
+            //     this.canvasWidth,
+            //     this.canvasHeight,
+            //     this.img_p_scale,
+            //     this.ctrl_scale,
+            //     this.cfg,
+            //     this.img2imgStrengh,
+            //     this.rembg,
+            //     croppedImageUrl,
+            //     this.referenceURL,
+            //     this.maskURL,
+            //     this.latentURL,
+            //     this.referenceURL2,
+            //     this.maskURL2,
+            //     this.latentURL2,
+            //     this.use_background
+            //   ]
+            // })
           }).then(res => res.json())
             .then(async data => {
               this.uploadedImageList.forEach(image => {
@@ -1326,6 +1347,8 @@ export default defineComponent({
 
               console.log(newImageURL)
               this.imageURL = newImageURL;
+
+              console.log(data.data)
 
               var imageFile = {
                 locked: false,
